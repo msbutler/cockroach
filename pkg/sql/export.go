@@ -13,6 +13,7 @@ package sql
 import (
 	"context"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/util"
 	"strconv"
 	"strings"
 
@@ -25,7 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgcode"
 	"github.com/cockroachdb/cockroach/pkg/sql/pgwire/pgerror"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
-	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/humanizeutil"
 	"github.com/cockroachdb/errors"
 )
@@ -42,6 +42,7 @@ type exportNode struct {
 	// export, typically to be appended to the destination URI
 	fileNamePattern string
 	csvOpts         roachpb.CSVOptions
+	parquetOpts     roachpb.ParquetOptions
 	chunkRows       int
 	chunkSize       int64
 	fileCompression execinfrapb.FileCompression
@@ -118,7 +119,7 @@ func (ef *execFactory) ConstructExport(
 		return nil, errors.Errorf("EXPORT cannot be used inside a transaction")
 	}
 
-	if fileFormat != "CSV" {
+	if fileFormat != "CSV" && fileFormat != "Parquet" {
 		return nil, errors.Errorf("unsupported export format: %q", fileFormat)
 	}
 
@@ -152,17 +153,39 @@ func (ef *execFactory) ConstructExport(
 		return nil, err
 	}
 
+	// evaluate csvOpts
 	csvOpts := roachpb.CSVOptions{}
-
-	if override, ok := optVals[exportOptionDelimiter]; ok {
-		csvOpts.Comma, err = util.GetSingleRune(override)
-		if err != nil {
-			return nil, pgerror.New(pgcode.InvalidParameterValue, "invalid delimiter")
+	if err :=func () error {
+		if override, ok := optVals[exportOptionDelimiter]; ok {
+			if fileFormat != "CSV"{
+				return errors.Errorf("EXPORT %q does not support the delimiter export option", fileFormat)
+			}
+			csvOpts.Comma, err = util.GetSingleRune(override)
+			if err != nil {
+				return pgerror.New(pgcode.InvalidParameterValue, "invalid delimiter")
+			}
 		}
+
+		if override, ok := optVals[exportOptionNullAs]; ok {
+			csvOpts.NullEncoding = &override
+		}
+
+		return nil
+	}(); err != nil {
+		return nil, err
 	}
 
-	if override, ok := optVals[exportOptionNullAs]; ok {
-		csvOpts.NullEncoding = &override
+	// evaluate parquetOpts
+	parquetOpts := roachpb.ParquetOptions{}
+	if err :=func () error {
+
+		if override, ok := optVals[exportOptionNullAs]; ok {
+			parquetOpts.NullEncoding = &override
+		}
+
+		return nil
+	}(); err != nil {
+		return nil, err
 	}
 
 	chunkRows := exportChunkRowsDefault
@@ -207,6 +230,7 @@ func (ef *execFactory) ConstructExport(
 		destination:     string(*destination),
 		fileNamePattern: namePattern,
 		csvOpts:         csvOpts,
+		parquetOpts:     parquetOpts,
 		chunkRows:       chunkRows,
 		chunkSize:       chunkSize,
 		fileCompression: codec,

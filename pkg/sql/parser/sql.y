@@ -3132,6 +3132,7 @@ import_stmt:
 //
 // Formats:
 //    CSV
+//    Parquet
 //
 // Options:
 //    delimiter = '...'   [CSV-specific]

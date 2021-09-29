@@ -25,7 +25,6 @@ require (
 	github.com/andy-kimball/arenaskl v0.0.0-20200617143215-f701008588b9
 	github.com/andybalholm/cascadia v1.2.0 // indirect
 	github.com/apache/arrow/go/arrow v0.0.0-20200610220642-670890229854
-	github.com/apache/thrift v0.0.0-20181211084444-2b7365c54f82 // indirect
 	github.com/armon/circbuf v0.0.0-20150827004946-bbbad097214e
 	github.com/aws/aws-sdk-go v1.38.69
 	github.com/axiomhq/hyperloglog v0.0.0-20181223111420-4b99d0c2c99e
@@ -150,6 +149,8 @@ require (
 	github.com/twpayne/go-geom v1.4.1
 	github.com/wadey/gocovmerge v0.0.0-20160331181800-b5bfa59ec0ad
 	github.com/xdg/scram v1.0.3
+	github.com/xitongsys/parquet-go v1.6.1
+	github.com/xitongsys/parquet-go-source v0.0.0-20200817004010-026bad9b25d0
 	github.com/zabawaba99/go-gitignore v0.0.0-20200117185801-39e6bddfb292
 	go.etcd.io/etcd/raft/v3 v3.0.0-20210320072418-e51c697ec6e8
 	golang.org/x/crypto v0.0.0-20210711020723-a769d52b0f97
