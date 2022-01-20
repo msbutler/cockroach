@@ -712,11 +712,6 @@ func backupPlanHook(
 			endTime = asOf.Timestamp
 		}
 
-		defaultURI, urisByLocalityKV, err := getURIsByLocalityKV(to, "")
-		if err != nil {
-			return err
-		}
-
 		makeCloudStorage := p.ExecCfg().DistSQLSrv.ExternalStorageFromURI
 
 		switch encryptionParams.encryptMode {
@@ -739,11 +734,10 @@ func backupPlanHook(
 			}
 		}
 
-		// TODO(pbardea): Refactor (defaultURI and urisByLocalityKV) pairs into a
-		// backupDestination struct.
-		collectionURI, defaultURI, resolvedSubdir, urisByLocalityKV, prevs, err :=
-			resolveDest(ctx, p.User(), backupStmt.Nested, backupStmt.AppendToLatest, defaultURI,
-				urisByLocalityKV, makeCloudStorage, endTime, to, incrementalFrom, subdir, incrementalStorage)
+		dest, prevs, err := resolveDest(ctx, p.User(), backupStmt.Nested,
+			backupStmt.AppendToLatest, makeCloudStorage, endTime, to,
+			incrementalFrom, subdir, incrementalStorage)
+
 		if err != nil {
 			return err
 		}
@@ -990,7 +984,7 @@ func backupPlanHook(
 		}
 
 		description, err := backupJobDescription(p, backupStmt.Backup, to, incrementalFrom,
-			encryptionParams.kmsURIs, resolvedSubdir, incrementalStorage)
+			encryptionParams.kmsURIs, dest.chosenSubdir, incrementalStorage)
 		if err != nil {
 			return err
 		}
@@ -1005,13 +999,13 @@ func backupPlanHook(
 			}
 		}
 
-		defaultStore, err := makeCloudStorage(ctx, defaultURI, p.User())
+		defaultStore, err := makeCloudStorage(ctx, dest.defaultURI, p.User())
 		if err != nil {
 			return err
 		}
 		defer defaultStore.Close()
 
-		if err := checkForPreviousBackup(ctx, defaultStore, defaultURI); err != nil {
+		if err := checkForPreviousBackup(ctx, defaultStore, dest.defaultURI); err != nil {
 			return err
 		}
 
@@ -1037,11 +1031,11 @@ func backupPlanHook(
 		backupDetails := jobspb.BackupDetails{
 			StartTime:         startTime,
 			EndTime:           endTime,
-			URI:               defaultURI,
-			URIsByLocalityKV:  urisByLocalityKV,
+			URI:               dest.defaultURI,
+			URIsByLocalityKV:  dest.urisByLocalityKV,
 			EncryptionOptions: encryptionOptions,
 			EncryptionInfo:    encryptionInfo,
-			CollectionURI:     collectionURI,
+			CollectionURI:     dest.collectionURI,
 		}
 
 		if err := planSchedulePTSChaining(ctx, p, &backupDetails, backupStmt); err != nil {

@@ -135,21 +135,20 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 					defaultDest, localitiesDest, err := getURIsByLocalityKV(to, "")
 					require.NoError(t, err)
 
-					collectionURI, defaultURI, chosenSuffix, urisByLocalityKV, prevBackupURIs, err := resolveDest(
+					dest, prevBackupURIs, err := resolveDest(
 						ctx, security.RootUserName(),
 						false /* nested */, false, /* appendToLatest */
-						defaultDest, localitiesDest,
 						externalStorageFromURI, endTime,
 						to, incrementalFrom, "", nil,
 					)
 					require.NoError(t, err)
 
 					// Not an INTO backup, so no collection of suffix info.
-					require.Equal(t, "", collectionURI)
-					require.Equal(t, "", chosenSuffix)
+					require.Equal(t, "", dest.collectionURI)
+					require.Equal(t, "", dest.chosenSubdir)
 
-					require.Equal(t, defaultDest, defaultURI)
-					require.Equal(t, localitiesDest, urisByLocalityKV)
+					require.Equal(t, defaultDest, dest.defaultURI)
+					require.Equal(t, localitiesDest, dest.urisByLocalityKV)
 					require.Equal(t, incrementalFrom, prevBackupURIs)
 				}
 
@@ -202,22 +201,19 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 				) {
 					endTime := hlc.Timestamp{WallTime: backupTime.UnixNano()}
 
-					dest, localitiesDest, err := getURIsByLocalityKV(to, "")
-					require.NoError(t, err)
-					collectionURI, defaultURI, chosenSuffix, urisByLocalityKV, prevBackupURIs, err := resolveDest(
+					dest, prevBackupURIs, err := resolveDest(
 						ctx, security.RootUserName(),
 						false /* nested */, false, /* appendToLatest */
-						dest, localitiesDest,
 						externalStorageFromURI, endTime,
 						to, nil /* incrementalFrom */, "", nil,
 					)
 					require.NoError(t, err)
 
 					// Not a backup collection.
-					require.Equal(t, "", collectionURI)
-					require.Equal(t, "", chosenSuffix)
-					require.Equal(t, expectedDefault, defaultURI)
-					require.Equal(t, expectedLocalities, urisByLocalityKV)
+					require.Equal(t, "", dest.collectionURI)
+					require.Equal(t, "", dest.chosenSubdir)
+					require.Equal(t, expectedDefault, dest.defaultURI)
+					require.Equal(t, expectedLocalities, dest.urisByLocalityKV)
 					require.Equal(t, expectedPrevBackups, prevBackupURIs)
 				}
 
@@ -314,7 +310,7 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 				firstRemoteBackupChain := []string(nil)
 
 				testCollectionBackup := func(t *testing.T, backupTime time.Time,
-					expectedDefault, expectedSuffix, expectedIncDir string, expectedPrevBackups []string,
+					expectedDefault, expectedSubdir, expectedIncDir string, expectedPrevBackups []string,
 					appendToLatest bool, subdir string, incrementalTo []string) {
 
 					endTime := hlc.Timestamp{WallTime: backupTime.UnixNano()}
@@ -327,10 +323,13 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 						_, localityCollections, err = getURIsByLocalityKV(incrementalTo, "")
 						require.NoError(t, err)
 					}
+<<<<<<< Updated upstream
 					collectionURI, defaultURI, chosenSuffix, urisByLocalityKV, prevBackupURIs, err := resolveDest(
+=======
+					dest, prevBackupURIs, err := resolveDest(
+>>>>>>> Stashed changes
 						ctx, security.RootUserName(),
 						true /* nested */, appendToLatest,
-						defaultCollection, localityCollections,
 						externalStorageFromURI, endTime,
 						collectionTo, incrementalFrom, subdir, incrementalTo,
 					)
@@ -340,15 +339,15 @@ func TestBackupRestoreResolveDestination(t *testing.T) {
 					for locality, localityDest := range localityCollections {
 						u, err := url.Parse(localityDest)
 						require.NoError(t, err)
-						u.Path = u.Path + expectedSuffix + expectedIncDir
+						u.Path = u.Path + expectedSubdir + expectedIncDir
 						localityDests[locality] = u.String()
 					}
 
-					require.Equal(t, collectionLoc, collectionURI)
-					require.Equal(t, expectedSuffix, chosenSuffix)
+					require.Equal(t, collectionLoc, dest.collectionURI)
+					require.Equal(t, expectedSubdir, dest.chosenSubdir)
 
-					require.Equal(t, expectedDefault, defaultURI)
-					require.Equal(t, localityDests, urisByLocalityKV)
+					require.Equal(t, expectedDefault, dest.defaultURI)
+					require.Equal(t, localityDests, dest.urisByLocalityKV)
 
 					require.Equal(t, expectedPrevBackups, prevBackupURIs)
 				}
