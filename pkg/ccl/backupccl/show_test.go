@@ -12,6 +12,8 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/sql"
+	"io/fs"
 	"io/ioutil"
 	"net/url"
 	"os"
@@ -786,4 +788,67 @@ func TestShowBackupPathIsCollectionRoot(t *testing.T) {
 	// Ensure proper error gets returned from back SHOW BACKUP Path
 	sqlDB.ExpectErr(t, "The specified path is the root of a backup collection.",
 		"SHOW BACKUP $1", localFoo)
+}
+
+func TestShowBackupCheckFiles(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	const numAccounts = 11
+
+	tc, sqlDB, tempDir, cleanupFn := backupRestoreTestSetup(t, singleNode, numAccounts,
+		InitManualReplication)
+	defer cleanupFn()
+	var (
+		localNode    = "nodelocal://0/"
+		dest         = "foo"
+		incDest      = "incFoo"
+		localDest    = localNode + dest
+		localIncDest = localNode + incDest
+	)
+
+	sqlDB.Exec(t, `BACKUP DATABASE data INTO $1`, localDest)
+	sqlDB.Exec(t, `CREATE TABLE data.foo (a INT); INSERT INTO data.foo VALUES (2)`)
+	sqlDB.Exec(t, fmt.Sprintf(`BACKUP DATABASE data INTO LATEST IN $1 WITH incremental_location = '%s'`,
+		localIncDest),
+		localDest)
+
+	latestSubdir := sqlDB.QueryStr(t, `SHOW BACKUPS IN $1`, localDest)[0][0]
+
+	t.Run("full", func(t *testing.T) {
+		// Ensure no errors first
+		sqlDB.Exec(t, `SHOW BACKUP LATEST IN $1 WITH check_files`, localDest)
+
+		firstFile := sqlDB.QueryStr(t, `SELECT path FROM [SHOW BACKUP FILES LATEST IN $1]`, localDest)[0][0]
+
+		fullPath := filepath.Join(tempDir, dest, latestSubdir, firstFile)
+		err := os.Remove(fullPath)
+		require.NoError(t, err, "failed to delete SST")
+
+		errorMsg := fmt.Sprintf("Error checking file %s in directory %s", firstFile, "/"+dest+latestSubdir)
+		sqlDB.ExpectErr(t, errorMsg, `SHOW BACKUP LATEST IN $1 WITH check_files`, localDest)
+	})
+
+	t.Run("incremental", func(t *testing.T) {
+		// Ensure no errors first
+		sqlDB.Exec(t, fmt.Sprintf(`SHOW BACKUP LATEST IN $1 WITH check_files, incremental_location = '%s'`,
+			localIncDest),
+			localDest)
+
+		files := sqlDB.QueryStr(t,
+			fmt.Sprintf(`SELECT path FROM [SHOW BACKUP FILES LATEST IN $1 WITH incremental_location = '%s']`,localIncDest),
+			localDest)
+		lastFile := files[len(files)-1][0]
+
+		fullPath := filepath.Join(tempDir, incDest, latestSubdir)
+		
+		err := os.Remove(fullPath)
+		require.NoError(t, err, "failed to delete SST")
+
+		errorMsg := fmt.Sprintf("Error checking file %s in directory %s", lastFile, "/"+incDest+latestSubdir)
+		sqlDB.ExpectErr(t, errorMsg, fmt.Sprintf(`SHOW BACKUP LATEST IN $1 WITH check_files, 
+incremental_location = '%s'`,localIncDest), localDest)
+	})
+
+	//Run the same check on a corrupted incremental in a non defaul location
+
 }

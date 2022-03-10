@@ -73,6 +73,7 @@ type backupInfoReader interface {
 		cloud.ExternalStorage,
 		*jobspb.BackupEncryptionOptions,
 		[]string,
+		bool,
 		chan<- tree.Datums,
 	) error
 	header() colinfo.ResultColumns
@@ -98,6 +99,7 @@ func (m manifestInfoReader) showBackup(
 	incStore cloud.ExternalStorage,
 	enc *jobspb.BackupEncryptionOptions,
 	incPaths []string,
+	checkFiles bool,
 	resultsCh chan<- tree.Datums,
 ) error {
 	var memSize int64
@@ -134,7 +136,17 @@ func (m manifestInfoReader) showBackup(
 		m.DeprecatedStatistics = nil
 		manifests[i+1] = m
 	}
-
+	if checkFiles {
+		if err := checkManifestSSTs(ctx, store, "",manifests[0]); err != nil {
+			return err
+		}
+		for i, manifestPath := range incPaths {
+			incSubDir := strings.Replace(manifestPath,backupManifestName,"",1)
+			if err := checkManifestSSTs(ctx, incStore, incSubDir, manifests[i+1]); err != nil {
+				return err
+			}
+		}
+	}
 	// Ensure that the descriptors in the backup manifests are up to date.
 	//
 	// This is necessary in particular for upgrading descriptors with old-style
@@ -182,6 +194,7 @@ func (m metadataSSTInfoReader) showBackup(
 	incStore cloud.ExternalStorage,
 	enc *jobspb.BackupEncryptionOptions,
 	incPaths []string,
+	checkFiles bool,
 	resultsCh chan<- tree.Datums,
 ) error {
 	filename := metadataSSTName
@@ -246,6 +259,7 @@ func showBackupPlanHook(
 		backupOptIncStorage:       sql.KVStringOptRequireValue,
 		backupOptDebugMetadataSST: sql.KVStringOptRequireNoValue,
 		backupOptEncDir:           sql.KVStringOptRequireValue,
+		backupOptCheckFiles:       sql.KVStringOptRequireNoValue,
 	}
 	optsFn, err := p.TypeAsStringOpts(ctx, backup.Options, expected)
 	if err != nil {
@@ -420,10 +434,14 @@ you must pass the 'encryption_info_dir' parameter that points to the directory o
 				return errors.Wrapf(err, "make incremental storage")
 			}
 		}
+
+		_, checkFiles := opts[backupOptCheckFiles]
+
 		mem := p.ExecCfg().RootMemoryMonitor.MakeBoundAccount()
 		defer mem.Close(ctx)
 
-		return infoReader.showBackup(ctx, &mem, store, incStore, encryption, incPaths, resultsCh)
+		return infoReader.showBackup(ctx, &mem, store, incStore, encryption, incPaths,
+			checkFiles, resultsCh)
 	}
 
 	return fn, infoReader.header(), nil, false, nil

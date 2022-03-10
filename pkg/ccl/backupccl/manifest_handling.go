@@ -732,6 +732,20 @@ func checkForLatestFileInCollection(
 	return true, nil
 }
 
+func checkManifestSSTs(ctx context.Context, store cloud.ExternalStorage, subdir string,
+	manifest BackupManifest) error {
+	for _, file := range manifest.Files {
+		pathFile := path.Join(subdir,file.Path)
+		f, err := store.ReadFile(ctx, pathFile)
+		if err != nil {
+			return errors.Wrapf(err, "Error checking file %s in directory %s/%s", file.Path,
+				manifest.Dir.LocalFile.Path,subdir)
+		}
+		f.Close(ctx)
+	}
+	return nil
+}
+
 func resolveBackupManifestsExplicitIncrementals(
 	ctx context.Context,
 	mem *mon.BoundAccount,
