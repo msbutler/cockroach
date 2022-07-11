@@ -377,7 +377,6 @@ func (rd *restoreDataProcessor) runRestoreWorkers(ctx context.Context, ssts chan
 		}
 	})
 }
-
 func (rd *restoreDataProcessor) processRestoreSpanEntry(
 	ctx context.Context, kr *KeyRewriter, sst mergedSST,
 ) (roachpb.BulkOpSummary, error) {
@@ -417,6 +416,7 @@ func (rd *restoreDataProcessor) processRestoreSpanEntry(
 		false, /* splitFilledRanges */
 		rd.flowCtx.Cfg.BackupMonitor.MakeBoundAccount(),
 		rd.flowCtx.Cfg.BulkSenderLimiter,
+		rd.spec.ValidateOnly,
 	)
 	if err != nil {
 		return summary, err
