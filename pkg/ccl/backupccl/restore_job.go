@@ -1079,7 +1079,6 @@ func createImportingDescriptors(
 
 			// Update the job once all descs have been prepared for ingestion.
 			err := r.job.SetDetails(ctx, txn, details)
-
 			// Emit to the event log now that the job has finished preparing descs.
 			emitRestoreJobEvent(ctx, p, jobs.StatusRunning, r.job)
 

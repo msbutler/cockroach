@@ -259,6 +259,14 @@ func inputReader(
 			return errors.Wrap(err, "un-marshaling restore span entry")
 		}
 
+		log.Infof(ctx, "About to Process Span Entry: [%s,%s)", entry.Span.Key.String(),
+			entry.Span.EndKey.String())
+		fileSpans := make([]string,len(entry.Files))
+		for i, files := range entry.Files {
+			fileSpans[i] = files.Span.Key.String() +" , " +files.Span.EndKey.String()
+			log.Infof(ctx, "\tFile %d: %s", i, fileSpans[i])
+		}
+
 		select {
 		case entries <- entry:
 		case <-ctx.Done():
@@ -269,7 +277,7 @@ func inputReader(
 
 type mergedSST struct {
 	entry   execinfrapb.RestoreSpanEntry
-	iter    *storage.ReadAsOfIterator
+	iter    storage.SimpleMVCCIterator
 	cleanup func()
 }
 
@@ -295,7 +303,9 @@ func (rd *restoreDataProcessor) openSSTs(
 	// sendIter sends a multiplexed iterator covering the currently accumulated files over the
 	// channel.
 	sendIter := func(iter storage.SimpleMVCCIterator, dirsToSend []cloud.ExternalStorage) error {
-		readAsOfIter := storage.NewReadAsOfIterator(iter, rd.spec.RestoreTime)
+		//readAsOfIter := storage.NewReadAsOfIterator(iter, rd.spec.RestoreTime)
+		// Simplify debugging, by using the pebble iterator
+		readAsOfIter := iter
 
 		cleanup := func() {
 			readAsOfIter.Close()
@@ -350,6 +360,7 @@ func (rd *restoreDataProcessor) openSSTs(
 	if err != nil {
 		return err
 	}
+
 	return sendIter(iter, dirs)
 }
 
@@ -449,17 +460,38 @@ func (rd *restoreDataProcessor) processRestoreSpanEntry(
 	startKeyMVCC, endKeyMVCC := storage.MVCCKey{Key: entry.Span.Key},
 		storage.MVCCKey{Key: entry.Span.EndKey}
 
+	var curKeyStr string
+
+	printIterInfo := func() {
+		log.Infof(ctx, "Done Processing Span Entry: [%s,%s)", startKeyMVCC.String(),endKeyMVCC.String())
+		fileSpans := make([]string,len(entry.Files))
+		for i, files := range entry.Files {
+			fileSpans[i] = files.Span.Key.String() +" , " +files.Span.EndKey.String()
+			log.Infof(ctx, "\tFile %d: %s", i, fileSpans[i])
+		}
+		log.Infof(ctx, "\tLast Valid Key: %s", curKeyStr)
+		log.Infof(ctx, "\tInvalid Key: %s", iter.UnsafeKey().String())
+	}
+
+	// Debug via iterating through the PebbleIterator
+
 	for iter.SeekGE(startKeyMVCC); ; iter.NextKey() {
 		ok, err := iter.Valid()
 		if err != nil {
+			printIterInfo()
+			log.Infof(ctx,"\tValid hit error: "+err.Error())
 			return summary, err
 		}
 
 		if !ok || !iter.UnsafeKey().Less(endKeyMVCC) {
+			printIterInfo()
+			log.Infof(ctx,"\tok value: %v",ok)
 			break
 		}
 
 		key := iter.UnsafeKey()
+		curKeyStr = key.String()
+		log.Infof(ctx,"\tAdding key: %s",curKeyStr)
 		keyScratch = append(keyScratch[:0], key.Key...)
 		key.Key = keyScratch
 		valueScratch = append(valueScratch[:0], iter.UnsafeValue()...)

@@ -81,9 +81,9 @@ func makeSimpleImportSpans(
 			// TODO(dt): binary search to the first file in required span?
 			for _, f := range backups[layer].Files {
 				if sp := span.Intersect(f.Span); sp.Valid() {
-					fileSpec := execinfrapb.RestoreFileSpec{Path: f.Path, Dir: backups[layer].Dir}
+					fileSpec := execinfrapb.RestoreFileSpec{Path: f.Path, Dir: backups[layer].Dir, Span: f.Span}
 					if dir, ok := backupLocalityMap[layer][f.LocalityKV]; ok {
-						fileSpec = execinfrapb.RestoreFileSpec{Path: f.Path, Dir: dir}
+						fileSpec = execinfrapb.RestoreFileSpec{Path: f.Path, Dir: dir, Span: f.Span}
 					}
 					if len(cover) == spanCoverStart {
 						cover = append(cover, makeEntry(span.Key, sp.EndKey, fileSpec))
