@@ -39,6 +39,9 @@ var _ catalog.TableDescriptor = (*wrapper)(nil)
 // descriptors at this cluster version.
 const ConstraintIDsAddedToTableDescsVersion = clusterversion.RemoveIncompatibleDatabasePrivileges
 
+// OfflineReasonImporting hard codes the Offline Reason for Importing Tables
+const OfflineReasonImporting = "importing"
+
 // wrapper is the base implementation of the catalog.Descriptor
 // interface, which is overloaded by immutable and Mutable.
 type wrapper struct {
@@ -183,6 +186,12 @@ func (desc *Mutable) SetPrimaryIndex(index descpb.IndexDescriptor) {
 // index.
 func (desc *Mutable) SetPublicNonPrimaryIndex(indexOrdinal int, index descpb.IndexDescriptor) {
 	desc.Indexes[indexOrdinal-1] = index
+}
+
+// IncrementImportEpoch increments the import epoch, signalling a new import job is
+// occurring on the table, when it already has data.
+func (desc *Mutable) IncrementImportEpoch() {
+	desc.ImportEpoch++
 }
 
 // UpdateIndexPartitioning applies the new partition and adjusts the column info
@@ -653,4 +662,8 @@ func (desc *wrapper) GetObjectType() privilege.ObjectType {
 		return privilege.Sequence
 	}
 	return privilege.Table
+}
+
+func (desc *wrapper) GetImportEpoch() uint32 {
+	return desc.ImportEpoch
 }

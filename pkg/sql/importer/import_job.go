@@ -267,6 +267,7 @@ func (r *importResumer) Resume(ctx context.Context, execCtx interface{}) error {
 					return errors.Wrap(err, "checking if existing table is empty")
 				}
 				details.Tables[i].WasEmpty = len(res) == 0
+
 			}
 		}
 
@@ -386,7 +387,8 @@ func (r *importResumer) prepareTablesForIngestion(
 				return importDetails, err
 			}
 			importDetails.Tables[i] = jobspb.ImportDetails_Table{
-				Desc: desc, Name: table.Name,
+				Desc:       desc,
+				Name:       table.Name,
 				SeqVal:     table.SeqVal,
 				IsNew:      table.IsNew,
 				TargetCols: table.TargetCols,
@@ -480,7 +482,8 @@ func prepareExistingTablesForIngestion(
 	// Take the table offline for import.
 	// TODO(dt): audit everywhere we get table descs (leases or otherwise) to
 	// ensure that filtering by state handles IMPORTING correctly.
-	importing.SetOffline("importing")
+	importing.SetOffline(tabledesc.OfflineReasonImporting)
+	importing.IncrementImportEpoch()
 
 	// TODO(dt): de-validate all the FKs.
 	if err := descsCol.WriteDesc(
@@ -564,7 +567,7 @@ func prepareNewTablesForIngestion(
 	// as tabledesc.TableDescriptor.
 	tableDescs := make([]catalog.TableDescriptor, len(newMutableTableDescriptors))
 	for i := range tableDescs {
-		newMutableTableDescriptors[i].SetOffline("importing")
+		newMutableTableDescriptors[i].SetOffline(tabledesc.OfflineReasonImporting)
 		tableDescs[i] = newMutableTableDescriptors[i]
 	}
 

@@ -721,6 +721,8 @@ type TableDescriptor interface {
 	// IsRefreshViewRequired indicates if a REFRESH VIEW operation needs to be called
 	// on a materialized view.
 	IsRefreshViewRequired() bool
+	//GetImportEpoch gets the current import epoch of the table descriptor
+	GetImportEpoch() uint32
 }
 
 // MutableTableDescriptor is both a MutableDescriptor and a TableDescriptor.

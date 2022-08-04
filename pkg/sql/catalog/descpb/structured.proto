@@ -1180,7 +1180,12 @@ message TableDescriptor {
   // this table, in which case the global setting is used.
   optional bool forecast_stats = 52 [(gogoproto.nullable) = true, (gogoproto.customname) = "ForecastStats"];
 
-  // Next ID: 54
+  // ImportIntoEpoch is the count of IMPORT INTO jobs that have been attempted on this
+  // table once it __already had data__. The ImportEpoch can include an in progress import, as the
+  // field gets incremented while preparing the table for ingestion.
+  optional uint32 import_epoch = 54 [(gogoproto.nullable) = false, (gogoproto.customname) = "ImportEpoch"];
+
+  // Next ID: 55
 }
 
 // SurvivalGoal is the survival goal for a database.
