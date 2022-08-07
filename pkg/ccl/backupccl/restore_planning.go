@@ -23,6 +23,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/multiregionccl"
 	"github.com/cockroachdb/cockroach/pkg/ccl/storageccl"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/featureflag"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
@@ -1769,9 +1770,13 @@ func doRestorePlan(
 			}
 		}
 	}
-
+	includeImportingTables := false
+	if p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.Start22_2) {
+		includeImportingTables = true
+	}
 	sqlDescs, restoreDBs, descsByTablePattern, tenants, err := selectTargets(
 		ctx, p, mainBackupManifests, restoreStmt.Targets, restoreStmt.DescriptorCoverage, endTime,
+		includeImportingTables,
 	)
 	if err != nil {
 		return errors.Wrap(err,
@@ -2003,6 +2008,8 @@ func doRestorePlan(
 	for i, table := range tables {
 		encodedTables[i] = table.TableDesc()
 	}
+
+	// TODO(msbutler): write IMPORTING DESCRIPTORS into job record!
 
 	restoreDetails := jobspb.RestoreDetails{
 		EndTime:            endTime,

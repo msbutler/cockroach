@@ -474,7 +474,11 @@ message ImportDetails {
     (gogoproto.casttype) = "github.com/cockroachdb/cockroach/pkg/sql/catalog/catpb.RegionName"
   ];
 
-  // next val: 28
+  // RestoredImport indicates that this IMPORT job began on a backed up cluster and was
+  // synthesized at the end of a RESTORE. Currently, a restored IMPORT job immediately fails
+  // and all imported data gets rolled back.
+  bool restored_import = 28;
+  // next val: 29
 }
 
 // SequenceValChunks represents a single chunk of sequence values allocated

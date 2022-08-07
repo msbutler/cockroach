@@ -103,6 +103,9 @@ func (r *importResumer) Resume(ctx context.Context, execCtx interface{}) error {
 	}
 
 	details := r.job.Details().(jobspb.ImportDetails)
+	if details.RestoredImport {
+		return r.OnFailOrCancel(ctx, execCtx, errors.New("Rollback Import on Restored Cluster"))
+	}
 	files := details.URIs
 	format := details.Format
 

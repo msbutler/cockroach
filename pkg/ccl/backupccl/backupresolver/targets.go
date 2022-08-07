@@ -21,6 +21,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/resolver"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/schemadesc"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
@@ -320,6 +321,7 @@ func DescriptorsMatchingTargets(
 	descriptors []catalog.Descriptor,
 	targets tree.BackupTargetList,
 	asOf hlc.Timestamp,
+	includeImportingTables bool,
 ) (DescriptorsMatched, error) {
 	ret := DescriptorsMatched{
 		DescsByTablePattern: make(map[tree.TablePattern]catalog.Descriptor, len(targets.Tables.TablePatterns)),
@@ -460,10 +462,17 @@ func DescriptorsMatchingTargets(
 
 			// Verify that the table is in the correct state.
 			if err := catalog.FilterDescriptorState(
-				tableDesc, tree.CommonLookupFlags{},
+				tableDesc, tree.CommonLookupFlags{IncludeOffline: true},
 			); err != nil {
 				// Return a does not exist error if explicitly asking for this table.
 				return ret, doesNotExistErr
+			}
+			if tableDesc.Offline() {
+				if tableDesc.GetOfflineReason() != tabledesc.OfflineReasonImporting {
+					return ret, errors.Errorf(`table %q is offline, with reason %v`, tree.ErrString(p), tableDesc.GetOfflineReason())
+				} else if !includeImportingTables {
+					return ret, errors.Errorf(`cannot backup importing table %v`)
+				}
 			}
 
 			ret.DescsByTablePattern[origPat] = descI
@@ -648,7 +657,11 @@ func LoadAllDescs(
 //
 // TODO(ajwerner): adopt the collection here.
 func ResolveTargetsToDescriptors(
-	ctx context.Context, p sql.PlanHookState, endTime hlc.Timestamp, targets *tree.BackupTargetList,
+	ctx context.Context,
+	p sql.PlanHookState,
+	endTime hlc.Timestamp,
+	targets *tree.BackupTargetList,
+	includeImportingTables bool,
 ) (
 	[]catalog.Descriptor,
 	[]descpb.ID,
@@ -663,7 +676,7 @@ func ResolveTargetsToDescriptors(
 
 	var matched DescriptorsMatched
 	if matched, err = DescriptorsMatchingTargets(ctx,
-		p.CurrentDatabase(), p.CurrentSearchPath(), allDescs, *targets, endTime); err != nil {
+		p.CurrentDatabase(), p.CurrentSearchPath(), allDescs, *targets, endTime, includeImportingTables); err != nil {
 		return nil, nil, nil, nil, err
 	}
 

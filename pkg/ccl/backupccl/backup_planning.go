@@ -26,6 +26,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl/backupresolver"
 	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/featureflag"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
@@ -558,10 +559,15 @@ func backupPlanHook(
 		var requestedDBs []catalog.DatabaseDescriptor
 		var descsByTablePattern map[tree.TablePattern]catalog.Descriptor
 
+		includeImportingTables := false
+		if p.ExecCfg().Settings.Version.IsActive(ctx, clusterversion.Start22_2) {
+			includeImportingTables = true
+		}
 		switch backupStmt.Coverage() {
 		case tree.RequestedDescriptors:
 			var err error
-			targetDescs, completeDBs, requestedDBs, descsByTablePattern, err = backupresolver.ResolveTargetsToDescriptors(ctx, p, endTime, backupStmt.Targets)
+			targetDescs, completeDBs, requestedDBs, descsByTablePattern,
+				err = backupresolver.ResolveTargetsToDescriptors(ctx, p, endTime, backupStmt.Targets, includeImportingTables)
 			if err != nil {
 				return errors.Wrap(err, "failed to resolve targets specified in the BACKUP stmt")
 			}
@@ -906,6 +912,7 @@ func getReintroducedSpans(
 	tables []catalog.TableDescriptor,
 	revs []backuppb.BackupManifest_DescriptorRevision,
 	endTime hlc.Timestamp,
+	reintroduceImportingTables bool,
 ) ([]roachpb.Span, error) {
 	reintroducedTables := make(map[descpb.ID]struct{})
 
@@ -915,6 +922,9 @@ func getReintroducedSpans(
 		// TODO(pbardea): Also check that lastWriteTime is set once those are
 		// populated on the table descriptor.
 		if table, _, _, _, _ := descpb.FromDescriptor(&desc); table != nil && table.Offline() {
+			if !reintroduceImportingTables && table.OfflineReason == tabledesc.OfflineReasonImporting {
+				continue
+			}
 			offlineInLastBackup[table.GetID()] = struct{}{}
 		}
 	}
@@ -1380,7 +1390,10 @@ func createBackupManifest(
 
 		newSpans = filterSpans(spans, prevBackups[len(prevBackups)-1].Spans)
 
-		tableSpans, err := getReintroducedSpans(ctx, execCfg, prevBackups, tables, revs, endTime)
+		// TODO(msbutler): set to false after guaranteeing that ALL in progress imports,
+		// throughout the whole backup chain, are using MVCC compatible AddSStable
+		reintroduceImportingTables := true
+		tableSpans, err := getReintroducedSpans(ctx, execCfg, prevBackups, tables, revs, endTime, reintroduceImportingTables)
 		if err != nil {
 			return backuppb.BackupManifest{}, err
 		}

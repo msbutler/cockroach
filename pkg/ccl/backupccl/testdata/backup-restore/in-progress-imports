@@ -1,78 +1,74 @@
-
 new-server name=s1
 ----
 
 exec-sql
 CREATE DATABASE d;
-CREATE TABLE d.tb (id INT PRIMARY KEY);
+USE d;
+CREATE TABLE foo (i INT PRIMARY KEY, s STRING);
+CREATE TABLE baz (i INT PRIMARY KEY, s STRING);
+INSERT INTO baz VALUES (1, 'x'),(2,'y'),(3,'z');
 ----
 
 exec-sql
-BACKUP DATABASE d INTO 'userfile:///foo'
-----
-
-# Attempt the restore but pause it before publishing descriptors.
-exec-sql
-SET CLUSTER SETTING jobs.debug.pausepoints = 'restore.before_publishing_descriptors';
+EXPORT INTO CSV 'nodelocal://0/export1/' FROM SELECT * FROM baz WHERE i = 1;
 ----
 
 exec-sql
-DROP DATABASE d;
+IMPORT INTO foo (i,s) CSV DATA ('nodelocal://0/export1/export*-n*.0.csv')
 ----
 
-restore expect-pausepoint tag=a
-RESTORE DATABASE d FROM LATEST IN 'userfile:///foo';
+exec-sql
+SET CLUSTER SETTING jobs.debug.pausepoints = 'import.after_ingest';
+----
+
+exec-sql
+EXPORT INTO CSV 'nodelocal://0/export3/' FROM SELECT * FROM baz WHERE i = 3;
+----
+
+# ensure the ImportEpoch increments before planning and does not rollback after the IMPORT INTO
+# job gets cancelled
+import expect-pausepoint tag=a
+IMPORT INTO foo (i,s) CSV DATA ('nodelocal://0/export3/export*-n*.0.csv')
 ----
 job paused at pausepoint
+
+exec-sql
+BACKUP TABLE foo INTO 'nodelocal://0/test-root/';
+----
+
+query-sql
+SELECT
+  database_name, object_name, object_type, rows
+FROM
+  [SHOW BACKUP FROM LATEST IN 'nodelocal://0/test-root/']
+WHERE
+  object_name = 'foo';
+----
+d foo table 2
+
+exec-sql
+BACKUP DATABASE d INTO 'nodelocal://0/test-root/';
+----
+
+query-sql
+SELECT
+  database_name, object_name, object_type, rows
+FROM
+  [SHOW BACKUP FROM LATEST IN 'nodelocal://0/test-root/']
+WHERE
+  object_name = 'foo';
+----
+d foo table 2
 
 # Cancel the job so that the cleanup hook runs.
 job cancel=a
 ----
 
-query-sql
-SELECT count(1) FROM [SHOW SCHEDULES] WHERE label LIKE 'row-level-ttl-%';
-----
-0
-
-subtest end
-
-
-subtest restore-fail-cleans-up-ttl-schedules-after-publishing
-
 exec-sql
-CREATE DATABASE d;
-CREATE TABLE d.tb (id INT PRIMARY KEY) WITH (ttl_expire_after = '10 minutes');
-----
-
-exec-sql
-BACKUP DATABASE d INTO 'userfile:///foo'
-----
-
-# Attempt the restore but pause it after publishing descriptors.
-exec-sql
-SET CLUSTER SETTING jobs.debug.pausepoints = '';
-----
-
-exec-sql
-SET CLUSTER SETTING jobs.debug.pausepoints = 'restore.after_publishing_descriptors';
-----
-
-exec-sql
-DROP DATABASE d;
-----
-
-restore expect-pausepoint tag=b
-RESTORE DATABASE d FROM LATEST IN 'userfile:///foo';
-----
-job paused at pausepoint
-
-# Cancel the job so that the cleanup hook runs.
-job cancel=b
+RESTORE DATABASE d FROM LATEST IN 'nodelocal://0/test-root/' with new_db_name=d2
 ----
 
 query-sql
-SELECT count(1) FROM [SHOW SCHEDULES] WHERE label LIKE 'row-level-ttl-%';
+SELECT * FROM d2.foo;
 ----
-0
-
-subtest end
+relation "foo" is offline: importing

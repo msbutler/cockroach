@@ -347,6 +347,7 @@ func selectTargets(
 	targets tree.BackupTargetList,
 	descriptorCoverage tree.DescriptorCoverage,
 	asOf hlc.Timestamp,
+	includeImportingTables bool,
 ) (
 	[]catalog.Descriptor,
 	[]catalog.DatabaseDescriptor,
@@ -393,7 +394,7 @@ func selectTargets(
 	}
 
 	matched, err := backupresolver.DescriptorsMatchingTargets(ctx,
-		p.CurrentDatabase(), p.CurrentSearchPath(), allDescs, targets, asOf)
+		p.CurrentDatabase(), p.CurrentSearchPath(), allDescs, targets, asOf, includeImportingTables)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}

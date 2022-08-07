@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/build"
@@ -805,7 +806,15 @@ func createImportingDescriptors(
 
 	// Set the new descriptors' states to offline.
 	for _, desc := range mutableTables {
-		desc.SetOffline("restoring")
+		reason := "restoring"
+		if desc.OfflineReason == tabledesc.OfflineReasonImporting {
+			// To prevent another backup from attempting to back up this restoring
+			// table with an in-progress import set the offline reason to contain both
+			// "importing" and "restoring". The "importing" reason will ensure this
+			// table remains offline once the restore completes.
+			reason = tabledesc.OfflineReasonImporting + ", " + reason
+		}
+		desc.SetOffline(reason)
 	}
 	for _, desc := range typesToWrite {
 		desc.SetOffline("restoring")
@@ -1864,6 +1873,9 @@ func (r *restoreResumer) publishDescriptors(
 	b := txn.NewBatch()
 	if err := all.ForEachDescriptorEntry(func(desc catalog.Descriptor) error {
 		d := desc.(catalog.MutableDescriptor)
+		if strings.Contains(d.GetOfflineReason(), tabledesc.OfflineReasonImporting) {
+			d.SetOffline(tabledesc.OfflineReasonImporting)
+		}
 		d.SetPublic()
 		return descsCol.WriteDescToBatch(
 			ctx, false /* kvTrace */, d, b,
