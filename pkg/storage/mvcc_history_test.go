@@ -681,7 +681,6 @@ var commands = map[string]cmd{
 
 	"iter_new":                    {typReadOnly, cmdIterNew},
 	"iter_new_incremental":        {typReadOnly, cmdIterNewIncremental}, // MVCCIncrementalIterator
-	"iter_new_read_as_of":         {typReadOnly, cmdIterNewReadAsOf},    // readAsOfIterator
 	"iter_seek_ge":                {typReadOnly, cmdIterSeekGE},
 	"iter_seek_lt":                {typReadOnly, cmdIterSeekLT},
 	"iter_seek_intent_ge":         {typReadOnly, cmdIterSeekIntentGE},

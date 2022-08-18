@@ -593,14 +593,7 @@ func makeIters(
 			return nil, nil, errors.Wrapf(err, "making external storage")
 		}
 
-		var iterOpts = storage.IterOptions{
-			KeyTypes:   storage.IterKeyTypePointsAndRanges,
-			LowerBound: keys.LocalMax,
-			UpperBound: keys.MaxKey,
-		}
-
-		iters[i], err = storageccl.ExternalSSTReader(ctx, []storageccl.StoreFile{{Store: dirStorage[i], FilePath: file.Path}}, nil, iterOpts)
-
+		iters[i], err = storageccl.ExternalSSTReader(ctx, dirStorage[i], file.Path, nil)
 		if err != nil {
 			return nil, nil, errors.Wrapf(err, "fetching sst reader")
 		}
