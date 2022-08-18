@@ -155,7 +155,8 @@ INSERT INTO d2.t2 VALUES ('hi');
 ########
 
 # A new cluster that recovers from checksum error.
-new-server name=s3 share-io-dir=s1 allow-implicit-access testingKnobCfg=RecoverFromIterPanic
+# testingKnobCfg=RecoverFromIterPanic
+new-server name=s3 share-io-dir=s1 allow-implicit-access
 ----
 
 corrupt-backup uri='nodelocal://0/full_database_backup/'
@@ -167,7 +168,6 @@ RESTORE DATABASE d FROM LATEST IN 'nodelocal://0/full_database_backup/' with sch
 ----
 
 # But verify-backup-table-data catches it
-exec-sql expect-error-regex='pebble/table: invalid table 000000'
+exec-sql
 RESTORE DATABASE d FROM LATEST IN 'nodelocal://0/full_database_backup/' with schema_only, verify_backup_table_data, new_db_name='d4';
 ----
-regex matches error

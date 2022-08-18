@@ -285,9 +285,6 @@ func (rd *restoreDataProcessor) openSSTs(
 	}()
 
 	var recoverFromIterPanic bool
-	if restoreKnobs, ok := rd.flowCtx.TestingKnobs().BackupRestoreTestingKnobs.(*sql.BackupRestoreTestingKnobs); ok {
-		recoverFromIterPanic = restoreKnobs.RecoverFromIterPanic
-	}
 
 	// sendIter sends a multiplexed iterator covering the currently accumulated files over the
 	// sendIters sends all of the currently accumulated iterators over the
