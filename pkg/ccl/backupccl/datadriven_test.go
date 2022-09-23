@@ -71,6 +71,10 @@ var localityCfgs = map[string]roachpb.Locality{
 	},
 }
 
+var customKnobs = map[string]sql.BackupRestoreTestingKnobs{
+	"skip-descriptor-change-intro": {SkipDescriptorChangeIntroduction: true},
+}
+
 type sqlDBKey struct {
 	server string
 	user   string
@@ -126,6 +130,7 @@ type serverCfg struct {
 	splits                int
 	ioConf                base.ExternalIODirConfig
 	localities            string
+	customTestingKnobs    string
 }
 
 func (d *datadrivenTestState) addServer(t *testing.T, cfg serverCfg) error {
@@ -135,6 +140,10 @@ func (d *datadrivenTestState) addServer(t *testing.T, cfg serverCfg) error {
 	params.ServerArgs.ExternalIODirConfig = cfg.ioConf
 	params.ServerArgs.Knobs = base.TestingKnobs{
 		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+	}
+	if cfg.customTestingKnobs != "" {
+		knobs := customKnobs[cfg.customTestingKnobs]
+		params.ServerArgs.Knobs.BackupRestore = &knobs
 	}
 
 	// If the server needs to control temporary object cleanup, let us set that up
@@ -263,6 +272,8 @@ func (d *datadrivenTestState) getSQLDB(t *testing.T, server string, user string)
 //     can control when to run the temporary object reconciliation loop using
 //     nudge-and-wait-for-temp-cleanup
 //
+//   - knobs: specificies a custom debug testing knob setup
+//
 //   - "exec-sql [server=<name>] [user=<name>] [args]"
 //     Executes the input SQL query on the target server. By default, server is
 //     the last created server.
@@ -359,7 +370,7 @@ func TestDataDriven(t *testing.T) {
 				return ""
 
 			case "new-server":
-				var name, shareDirWith, iodir, localities string
+				var name, shareDirWith, iodir, localities, knobs string
 				var splits int
 				var nudgeTempObjectCleanup chan time.Time
 				var tempObjectCleanupDone chan struct{}
@@ -392,6 +403,10 @@ func TestDataDriven(t *testing.T) {
 					tempObjectCleanupDone = make(chan struct{})
 				}
 
+				if d.HasArg("knobs") {
+					d.ScanArgs(t, "knobs", &knobs)
+				}
+
 				lastCreatedServer = name
 				cfg := serverCfg{
 					name:                    name,
@@ -402,6 +417,7 @@ func TestDataDriven(t *testing.T) {
 					splits:                  splits,
 					ioConf:                  io,
 					localities:              localities,
+					customTestingKnobs:      knobs,
 				}
 				err := ds.addServer(t, cfg)
 				if err != nil {

@@ -5,7 +5,7 @@
 # - roll it back it back non-mvcc
 # - run an inc backup and ensure we reintroduce the table spans
 
-new-server name=s1
+new-server name=s1 knobs=skip-descriptor-change-intro
 ----
 
 exec-sql
@@ -16,6 +16,7 @@ CREATE INDEX foo_idx ON foo (s);
 CREATE INDEX foo_to_drop_idx ON foo (s);
 CREATE TABLE foofoo (i INT PRIMARY KEY, s STRING);
 INSERT INTO foofoo VALUES (10, 'x0');
+CREATE TABLE goodfoo (i INT PRIMARY KEY, s STRING);
 CREATE TABLE baz (i INT PRIMARY KEY, s STRING);
 INSERT INTO baz VALUES (1, 'x'),(2,'y'),(3,'z');
 ----
@@ -43,6 +44,11 @@ job paused at pausepoint
 
 import expect-pausepoint tag=aa
 IMPORT INTO foofoo (i,s) CSV DATA ('nodelocal://0/export1/export*-n*.0.csv')
+----
+job paused at pausepoint
+
+import expect-pausepoint tag=aaa
+IMPORT INTO goodfoo (i,s) CSV DATA ('nodelocal://0/export1/export*-n*.0.csv')
 ----
 job paused at pausepoint
 
@@ -81,6 +87,12 @@ job tag=a wait-for-state=cancelled
 job tag=aa wait-for-state=cancelled
 ----
 
+job resume=aaa
+----
+
+job tag=aaa wait-for-state=succeeded
+----
+
 # Verify proper rollback
 query-sql
 SELECT count(*) FROM d.foo;
@@ -92,6 +104,12 @@ query-sql
 SELECT count(*) FROM d.foofoo;
 ----
 1
+
+# Verify completed import
+query-sql
+SELECT count(*) FROM d.goodfoo;
+----
+3
 
 
 # Even though the full table will get backed up from ts=0 during the next round of incremental
@@ -107,9 +125,8 @@ CREATE INDEX foo_new_idx ON foo (s);
 ----
 
 
-# Ensure incremental backups backup the newly online spans from ts=0, as the
-# import was rolled back via non-mvcc clear range. So, backup 0 rows from foo
-# (it was empty pre-import), and 1 row from foo (had 1 row pre-import);
+# Because BackupRestoreTestingKnobs.SkipDescriptorChangeIntroduction is turned on,
+# these backup will be unable to introduce foo and foofoo.
 exec-sql
 BACKUP INTO LATEST IN 'nodelocal://0/cluster/' with revision_history;
 ----
@@ -146,6 +163,9 @@ d foofoo table 4 full
 d foo table 0 incremental
 d foofoo table 1 incremental
 
+
+# Note that we're purposely skipping the reintroduction of foo and foofoo in the
+# incremental to simulate the bug.
 query-sql
 SELECT
   database_name, object_name, object_type, rows, backup_type
@@ -157,7 +177,7 @@ ORDER BY
   start_time, database_name;
 ----
 d foo table 0 incremental
-d foofoo table 1 incremental
+d foofoo table 0 incremental
 
 
 query-sql
@@ -171,84 +191,39 @@ ORDER BY
   start_time, database_name;
 ----
 d foo table 0 incremental
-d foofoo table 1 incremental
+d foofoo table 0 incremental
 
-
-# To verify the incremental backed up the pre-import state table, restore d and ensure all tables
-# are in their pre-import state.
 
 new-server name=s2 share-io-dir=s1
 ----
 
-exec-sql
-RESTORE FROM LATEST IN 'nodelocal://0/cluster/';
-----
-
-
-query-sql
-SELECT count(*) FROM d.foo;
-----
-0
-
-
-query-sql
-SELECT count(*) FROM d.foofoo;
-----
-1
-
-
-query-sql
-select DISTINCT index_name FROM [SHOW INDEXES FROM d.foo];
-----
-foo_pkey
-foo_idx
-foo_new_idx
-
 
 exec-sql
-RESTORE DATABASE d FROM LATEST IN 'nodelocal://0/database/' with new_db_name=d2;
+RESTORE DATABASE d FROM LATEST IN 'nodelocal://0/database/';
 ----
+pq: The backup chain did not properly back up table foofoo, which means foofoo is not restorable. To continue the restore, either restore from the different full backup or remove foofoo from the restore targets
+HINT: See: https://github.com/cockroachdb/cockroach/issues/88042
 
-query-sql
-SELECT count(*) FROM d2.foo;
-----
-0
-
-
-query-sql
-SELECT count(*) FROM d2.foofoo;
-----
-1
-
-query-sql
-select DISTINCT index_name FROM [SHOW INDEXES FROM d2.foo];
-----
-foo_pkey
-foo_idx
-foo_new_idx
-
+# Check that if the corrupt tables are removed, the restore passes
 exec-sql
-CREATE DATABASE d3;
+CREATE DATABASE d;
 ----
 
 exec-sql
-RESTORE TABLE d.* FROM LATEST IN 'nodelocal://0/database/' with into_db=d3;
+RESTORE TABLE d.baz, d.goodfoo FROM LATEST IN 'nodelocal://0/database/';
 ----
 
-query-sql
-SELECT count(*) FROM d3.foo;
-----
-0
 
-
-query-sql
-SELECT count(*) FROM d3.foofoo;
+exec-sql
+CREATE DATABASE d2;
 ----
-1
 
-query-sql
-select DISTINCT index_name FROM [SHOW INDEXES FROM d3.foo];
+exec-sql
+RESTORE TABLE d.* FROM LATEST IN 'nodelocal://0/database/' with into_db=d2;
 ----
-foo_pkey
-foo_idx
-foo_new_idx
+pq: The backup chain did not properly back up table foofoo, which means foofoo is not restorable. To continue the restore, either restore from the different full backup or remove foofoo from the restore targets
+HINT: See: https://github.com/cockroachdb/cockroach/issues/88042
+
+exec-sql
+RESTORE TABLE d.baz, d.goodfoo FROM LATEST IN 'nodelocal://0/database/' with into_db=d2;
+----

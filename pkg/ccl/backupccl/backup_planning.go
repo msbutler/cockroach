@@ -1372,6 +1372,22 @@ func planSchedulePTSChaining(
 	return nil
 }
 
+func getLastDescriptorChange(
+	revs []BackupManifest_DescriptorRevision,
+) map[descpb.ID]*descpb.TableDescriptor {
+	latestTableDescChangeInLastBackup := make(map[descpb.ID]*descpb.TableDescriptor)
+	for _, rev := range revs {
+		if table, _, _, _ := descpb.FromDescriptor(rev.Desc); table != nil {
+			if trackedRev, ok := latestTableDescChangeInLastBackup[table.GetID()]; !ok {
+				latestTableDescChangeInLastBackup[table.GetID()] = table
+			} else if trackedRev.Version < table.Version {
+				latestTableDescChangeInLastBackup[table.GetID()] = table
+			}
+		}
+	}
+	return latestTableDescChangeInLastBackup
+}
+
 // getReintroducedSpans checks to see if any spans need to be re-backed up from
 // ts = 0. This may be the case if a span was OFFLINE in the previous backup and
 // has come back online since. The entire span needs to be re-backed up because
@@ -1412,20 +1428,12 @@ func getReintroducedSpans(
 		}
 	}
 
-	latestTableDescChangeInLastBackup := make(map[descpb.ID]*descpb.TableDescriptor)
-	for _, rev := range lastBackup.DescriptorChanges {
-		if table, _, _, _ := descpb.FromDescriptor(rev.Desc); table != nil {
-			if trackedRev, ok := latestTableDescChangeInLastBackup[table.GetID()]; !ok {
-				latestTableDescChangeInLastBackup[table.GetID()] = table
-			} else if trackedRev.Version < table.Version {
-				latestTableDescChangeInLastBackup[table.GetID()] = table
+	latestTableDescChangeInLastBackup := getLastDescriptorChange(lastBackup.DescriptorChanges)
+	if !execCfg.BackupRestoreTestingKnobs.SkipDescriptorChangeIntroduction {
+		for _, table := range latestTableDescChangeInLastBackup {
+			if table.Offline() {
+				offlineInLastBackup[table.GetID()] = struct{}{}
 			}
-		}
-	}
-
-	for _, table := range latestTableDescChangeInLastBackup {
-		if table.Offline() {
-			offlineInLastBackup[table.GetID()] = struct{}{}
 		}
 	}
 
@@ -1911,7 +1919,6 @@ func getBackupDetailAndManifest(
 		newSpans = filterSpans(spans, prevBackups[len(prevBackups)-1].Spans)
 
 		reIntroducedSpans, err = getReintroducedSpans(ctx, execCfg, prevBackups, tables, revs, endTime)
-		fmt.Printf("Reintroduced spans %v, for backup with interval (%v,%v]\n", reIntroducedSpans, startTime, endTime)
 		if err != nil {
 			return jobspb.BackupDetails{}, BackupManifest{}, err
 		}

@@ -321,15 +321,100 @@ func fullClusterTargetsBackup(
 	return fullClusterDescs, fullClusterDBIDs, nil
 }
 
+// checkIntroducedSpanCorruption asserts the backup chain is not missing data for a table that
+// should have been reIntroduced. This occurs under the following conditions:
+//
+// For a given table we seek to restore:
+//  1. In a given backup with a startTime less than the RESTORE AOST:
+//  2. If the backup explicitly backed up the table, i.e. its in manifest.Descriptors:
+//  3. If the table was offline in the previous backup, according the prevBackup.DescriptorChanges
+//  4. Assert the backup introduced the table's span
+func checkIntroducedSpanCorruption(
+	restoringDescs []catalog.Descriptor,
+	mainBackupManifests []BackupManifest,
+	endTime hlc.Timestamp,
+	codec keys.SQLCodec,
+) error {
+	fmt.Printf("Check for intro spans corruption")
+	// Gather the tables we'd like to restore.
+	requiredTables := make(map[descpb.ID]struct{})
+	for _, restoringDesc := range restoringDescs {
+		if _, ok := restoringDesc.(catalog.TableDescriptor); ok {
+			requiredTables[restoringDesc.GetID()] = struct{}{}
+		}
+
+		// If any backup with a start time below Endtime in the chain missed a
+		// reintroduced span, that we'd like to restore, then the restore must fail.
+		for i, b := range mainBackupManifests {
+			if !endTime.IsEmpty() && endTime.Less(b.StartTime) {
+				return nil
+			}
+			if i == 0 {
+				// The full backup does not contain reintroduced spans
+				continue
+			}
+
+			// Gather the tables included in the backup
+			tablesIncluded := make(map[descpb.ID]struct{})
+			for _, desc := range mainBackupManifests[i].Descriptors {
+				if table, _, _, _ := descpb.FromDescriptor(&desc); table != nil {
+					tablesIncluded[table.GetID()] = struct{}{}
+				}
+			}
+
+			// Gather the introduced tables
+			tablesIntroduced := make(map[descpb.ID]struct{})
+			for _, span := range mainBackupManifests[i].IntroducedSpans {
+				_, tableID, err := codec.DecodeTablePrefix(span.Key)
+				fmt.Printf("\tIntroduced %v\n", tableID)
+				if err != nil {
+					return err
+				}
+				tablesIntroduced[descpb.ID(tableID)] = struct{}{}
+			}
+
+			// Find the offline tables in the previous backup according to the covered descriptor changes
+			latestTableDescChangeInLastBackup := getLastDescriptorChange(mainBackupManifests[i-1].DescriptorChanges)
+			for _, table := range latestTableDescChangeInLastBackup {
+				if _, ok := tablesIncluded[table.GetID()]; ok && table.Offline() {
+					// If the table's last revision in the previous backup brought the
+					// table offline, and the current backup observed the table online,
+					// assert that the table's spans were reintroduced.
+					fmt.Printf("\tChecking %v, %v \n", table.GetID(), table.Name)
+
+					// Check if the table was in fact re-introduced
+					_, introduced := tablesIntroduced[table.ID]
+
+					// Check if the restore requires this table
+					_, required := requiredTables[table.ID]
+
+					if required && !introduced {
+						tableError := errors.Newf("The backup chain did not properly back up table %v, "+
+							"which means %v is not restorable. To continue the restore, "+
+							"either restore from the different full backup or remove %v from the restore targets",
+							table.Name, table.Name, table.Name)
+						return errors.WithIssueLink(tableError, errors.IssueLink{
+							IssueURL: "https://github.com/cockroachdb/cockroach/issues/88042",
+							Detail: `A backup chain with revision history can lose data on a table with a
+rolled back import`,
+						})
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // selectTargets loads all descriptors from the selected backup manifest(s),
 // filters the descriptors based on the targets specified in the restore, and
 // calculates the max descriptor ID in the backup.
 // Post filtering, the method returns:
-//  - A list of all descriptors (table, type, database, schema) along with their
-//    parent databases.
-//  - A list of database descriptors IFF the user is restoring on the cluster or
-//    database level
-//  - A list of tenants to restore, if applicable.
+//   - A list of all descriptors (table, type, database, schema) along with their
+//     parent databases.
+//   - A list of database descriptors IFF the user is restoring on the cluster or
+//     database level
+//   - A list of tenants to restore, if applicable.
 func selectTargets(
 	ctx context.Context,
 	p sql.PlanHookState,
