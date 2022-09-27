@@ -6448,11 +6448,6 @@ func TestBackupRestoreInsideTenant(t *testing.T) {
 	defer log.Scope(t).Close(t)
 	const numAccounts = 1
 
-	makeTenant := func(srv serverutils.TestServerInterface, tenant uint64) (*sqlutils.SQLRunner, func()) {
-		_, conn := serverutils.StartTenant(t, srv, base.TestTenantArgs{TenantID: roachpb.MakeTenantID(tenant)})
-		cleanup := func() { conn.Close() }
-		return sqlutils.MakeSQLRunner(conn), cleanup
-	}
 	tc, systemDB, dir, cleanupFn := backupRestoreTestSetup(t, singleNode, numAccounts, InitManualReplication)
 	_, _ = tc, systemDB
 	defer cleanupFn()
@@ -6460,6 +6455,12 @@ func TestBackupRestoreInsideTenant(t *testing.T) {
 
 	// NB: tenant certs for 10, 11, and 20 are embedded. See:
 	_ = security.EmbeddedTenantIDs()
+
+	makeTenant := func(srv serverutils.TestServerInterface, tenant uint64) (*sqlutils.SQLRunner, func()) {
+		_, conn := serverutils.StartTenant(t, srv, base.TestTenantArgs{TenantID: roachpb.MakeTenantID(tenant), ExternalIODir: dir})
+		cleanup := func() { conn.Close() }
+		return sqlutils.MakeSQLRunner(conn), cleanup
+	}
 
 	tenant10, cleanupT10 := makeTenant(srv, 10)
 	defer cleanupT10()
@@ -6483,6 +6484,8 @@ func TestBackupRestoreInsideTenant(t *testing.T) {
 		// This test uses this mock HTTP server to pass the backup files between tenants.
 		httpAddr, httpServerCleanup := makeInsecureHTTPServer(t)
 		defer httpServerCleanup()
+
+		httpAddr = "nodelocal://0/foo"
 
 		tenant10.Exec(t, `BACKUP TO $1`, httpAddr)
 
@@ -6524,6 +6527,8 @@ func TestBackupRestoreInsideTenant(t *testing.T) {
 		// This test uses this mock HTTP server to pass the backup files between tenants.
 		httpAddr, httpServerCleanup := makeInsecureHTTPServer(t)
 		defer httpServerCleanup()
+
+		httpAddr = "nodelocal://0/baz"
 
 		systemDB.Exec(t, `BACKUP TO $1`, httpAddr)
 
