@@ -110,9 +110,10 @@ func ClearTableData(
 	sv *settings.Values,
 	table catalog.TableDescriptor,
 ) error {
-	log.Infof(ctx, "clearing data for table %d", table.GetID())
 	tableKey := roachpb.RKey(codec.TablePrefix(uint32(table.GetID())))
 	tableSpan := roachpb.RSpan{Key: tableKey, EndKey: tableKey.PrefixEnd()}
+	log.Infof(ctx, "clearing data for table %d with span %s - %s", table.GetID(),
+		tableKey, tableKey.PrefixEnd())
 	return clearSpanData(ctx, db, distSender, tableSpan)
 }
 
