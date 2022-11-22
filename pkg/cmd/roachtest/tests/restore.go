@@ -537,7 +537,7 @@ func registerRestore(r registry.Registry) {
 			parallelize: true},
 		{dataSet: tpccIncData{}, nodes: 10, timeout: 6 * time.Hour},
 		{dataSet: tpce10TB{}, nodes: 10, timeout: 10 * time.Hour, cpus: 8, pdVolumeSize: 1500,
-			detached: true},
+			detached: false},
 	} {
 		item := item
 		clusterOpts := make([]spec.Option, 0)
