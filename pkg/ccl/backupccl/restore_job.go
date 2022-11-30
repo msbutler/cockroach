@@ -12,6 +12,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/jobs/jobsprotectedts"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptpb"
 	"math"
 	"sort"
 	"time"
@@ -1356,7 +1358,7 @@ func createImportingDescriptors(
 // protectRestoreSpans issues a protected timestamp over the span we seek to
 // restore. If a pts already exists in the job record, due to previous call of
 // this function, this noops.
-/*func protectRestoreSpans(
+func protectRestoreSpans(
 	ctx context.Context,
 	execCfg *sql.ExecutorConfig,
 	job *jobs.Job,
@@ -1402,7 +1404,7 @@ func createImportingDescriptors(
 	}
 	protectedTime := hlc.Timestamp{WallTime: timeutil.Now().UnixNano()}
 	return execCfg.ProtectedTimestampManager.Protect(ctx, job, target, protectedTime)
-}*/
+}
 
 // remapPublicSchemas is used to create a descriptor backed public schema
 // for databases that have virtual public schemas.
@@ -1591,10 +1593,10 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		mainData.addTenant(from, to)
 	}
 
-	//_, err = protectRestoreSpans(ctx, p.ExecCfg(), r.job, details, mainData.tenantRekeys)
-	// if err != nil {
-	//	return err
-	//}
+	_, err = protectRestoreSpans(ctx, p.ExecCfg(), r.job, details, mainData.tenantRekeys)
+	if err != nil {
+		return err
+	}
 	// the restore details now have a pts
 	details = r.job.Details().(jobspb.RestoreDetails)
 	if err := p.ExecCfg().JobRegistry.CheckPausepoint(
