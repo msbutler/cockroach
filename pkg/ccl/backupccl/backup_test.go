@@ -9422,46 +9422,48 @@ func TestProtectRestoreSpans(t *testing.T) {
 			// Cannot run a restore of a tenant within a tenant
 			continue
 		}
-		if subtest.name == "cluster" {
-			// Use the empty cluster for cluster restore
-			sqlDB = emptyDB
-			// sqlDB.Exec(t, "USE system")
-			continue
-		}
-		// Begin a Restore and assert that PTS with the correct target was persisted
-		sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = 'restore.before_flow'`)
-		var jobId jobspb.JobID
-		sqlDB.QueryRow(t, subtest.restoreStmt, localFoo).Scan(&jobId)
-		jobutils.WaitForJobToPause(t, sqlDB, jobId)
+		t.Run(subtest.name, func(t *testing.T) {
 
-		restoreDetails := jobutils.GetJobPayload(t, sqlDB, jobId).GetRestore()
-		require.NotNil(t, restoreDetails.ProtectedTimestampRecord)
+			if subtest.name == "cluster" {
+				// Use the empty cluster for cluster restore
+				sqlDB = emptyDB
+				sqlDB.Exec(t, "USE system")
+			}
+			// Begin a Restore and assert that PTS with the correct target was persisted
+			sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = 'restore.before_flow'`)
+			var jobId jobspb.JobID
+			sqlDB.QueryRow(t, subtest.restoreStmt, localFoo).Scan(&jobId)
+			jobutils.WaitForJobToPause(t, sqlDB, jobId)
 
-		target := ptutil.GetPTSTarget(t, sqlDB, restoreDetails.ProtectedTimestampRecord)
-		switch subtest.name {
-		case "cluster":
-			// The target cluster object doesn't have any info,
-			// so just assert that the right type was instantiated.
-			require.NotNil(t, target.GetCluster())
-		case "tenant":
-			targetIDs := target.GetTenants()
-			require.Equal(t, roachpb.TenantID{InternalValue: 20}, targetIDs.IDs[0])
-		case "database":
-			targetIDs := target.GetSchemaObjects()
-			require.Equal(t, restoreDetails.DatabaseDescs[0].GetID(), targetIDs.IDs[0])
-		case "table":
-			targetIDs := target.GetSchemaObjects()
-			require.Equal(t, restoreDetails.TableDescs[0].GetID(), targetIDs.IDs[0])
-		}
-		// Finish the restore and ensure the PTS record was removed
-		sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = ''`)
-		sqlDB.Exec(t, `RESUME JOB $1`, jobId)
-		jobutils.WaitForJobToSucceed(t, sqlDB, jobId)
+			restoreDetails := jobutils.GetJobPayload(t, sqlDB, jobId).GetRestore()
+			require.NotNil(t, restoreDetails.ProtectedTimestampRecord)
 
-		/*var count int
-		sqlDB.QueryRow(t, `SELECT count(*) FROM system.protected_ts_records WHERE id = $1`,
-			restoreDetails.ProtectedTimestampRecord).Scan(&count)
-		require.Equal(t, 0, count)*/
+			target := ptutil.GetPTSTarget(t, sqlDB, restoreDetails.ProtectedTimestampRecord)
+			switch subtest.name {
+			case "cluster":
+				// The target cluster object doesn't have any info,
+				// so just assert that the right type was instantiated.
+				require.NotNil(t, target.GetCluster())
+			case "tenant":
+				targetIDs := target.GetTenants()
+				require.Equal(t, roachpb.TenantID{InternalValue: 20}, targetIDs.IDs[0])
+			case "database":
+				targetIDs := target.GetSchemaObjects()
+				require.Equal(t, restoreDetails.DatabaseDescs[0].GetID(), targetIDs.IDs[0])
+			case "table":
+				targetIDs := target.GetSchemaObjects()
+				require.Equal(t, restoreDetails.TableDescs[0].GetID(), targetIDs.IDs[0])
+			}
+			// Finish the restore and ensure the PTS record was removed
+			sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = ''`)
+			sqlDB.Exec(t, `RESUME JOB $1`, jobId)
+			jobutils.WaitForJobToSucceed(t, sqlDB, jobId)
+
+			var count int
+			sqlDB.QueryRow(t, `SELECT count(*) FROM system.protected_ts_records WHERE id = $1`,
+				restoreDetails.ProtectedTimestampRecord).Scan(&count)
+			require.Equal(t, 0, count)
+		})
 	}
 }
 
