@@ -9422,6 +9422,9 @@ func TestProtectRestoreSpans(t *testing.T) {
 			// Cannot run a restore of a tenant within a tenant
 			continue
 		}
+		if subtest.name != "cluster"{
+			continue
+		}
 		t.Run(subtest.name, func(t *testing.T) {
 
 			if subtest.name == "cluster" {
