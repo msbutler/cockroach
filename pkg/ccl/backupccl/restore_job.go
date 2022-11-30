@@ -25,10 +25,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/joberror"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
-	"github.com/cockroachdb/cockroach/pkg/jobs/jobsprotectedts"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/telemetry"
@@ -1358,7 +1356,7 @@ func createImportingDescriptors(
 // protectRestoreSpans issues a protected timestamp over the span we seek to
 // restore. If a pts already exists in the job record, due to previous call of
 // this function, this noops.
-func protectRestoreSpans(
+/*func protectRestoreSpans(
 	ctx context.Context,
 	execCfg *sql.ExecutorConfig,
 	job *jobs.Job,
@@ -1404,7 +1402,7 @@ func protectRestoreSpans(
 	}
 	protectedTime := hlc.Timestamp{WallTime: timeutil.Now().UnixNano()}
 	return execCfg.ProtectedTimestampManager.Protect(ctx, job, target, protectedTime)
-}
+}*/
 
 // remapPublicSchemas is used to create a descriptor backed public schema
 // for databases that have virtual public schemas.
