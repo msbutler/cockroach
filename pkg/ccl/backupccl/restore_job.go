@@ -1593,11 +1593,11 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		mainData.addTenant(from, to)
 	}
 
-	_, err = protectRestoreSpans(ctx, p.ExecCfg(), r.job, details, mainData.tenantRekeys)
-	if err != nil {
-		return err
-	}
-	// the restore details now have pts
+	//_, err = protectRestoreSpans(ctx, p.ExecCfg(), r.job, details, mainData.tenantRekeys)
+	// if err != nil {
+	//	return err
+	//}
+	// the restore details now have a pts
 	details = r.job.Details().(jobspb.RestoreDetails)
 	if err := p.ExecCfg().JobRegistry.CheckPausepoint(
 		"restore.before_flow"); err != nil {

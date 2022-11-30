@@ -52,7 +52,8 @@ func TestFullClusterBackup(t *testing.T) {
 
 	settings := clustersettings.MakeTestingClusterSettings()
 	params := base.TestClusterArgs{
-		ServerArgs: base.TestServerArgs{
+		ServerArgs: base.TestServerArgs:q
+		{
 			// Disabled only because backupRestoreTestSetupEmpty, another DR test
 			// helper function, that is not yet enabled to set up tenants within
 			// clusters by default. Tracking issue
