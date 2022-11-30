@@ -8717,7 +8717,7 @@ func TestRestorePauseOnError(t *testing.T) {
 		}
 
 		jobRegistry.(*jobs.Registry).TestingResumerCreationKnobs = map[jobspb.Type]func(raw jobs.Resumer) jobs.
-			Resumer{
+		Resumer{
 			jobspb.TypeRestore: func(raw jobs.Resumer) jobs.Resumer {
 				r := raw.(*restoreResumer)
 				r.testingKnobs.beforePublishingDescriptors = func() error {
@@ -9324,6 +9324,48 @@ func TestExcludeDataFromBackupDoesNotHoldupGC(t *testing.T) {
 			require.Truef(t, afterBackup.Less(thresh), "%v >= %v", afterBackup, thresh)
 			return nil
 		})
+}
+
+func TestRestoreOIDRace(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	numAccounts := 100
+	params := base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			Knobs:                    base.TestingKnobs{JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals()},
+			DisableDefaultTestTenant: true,
+		},
+	}
+	tc, sqlDB, tempDir, cleanupFn := backupRestoreTestSetupWithParams(t, singleNode,
+		numAccounts,
+		InitManualReplication, params)
+	_, emptyDB, cleanupEmptyCluster := backupRestoreTestSetupEmpty(t, singleNode, tempDir,
+		InitManualReplication, params)
+	defer cleanupEmptyCluster()
+	defer cleanupFn()
+
+	ctx := context.Background()
+	if !tc.StartedDefaultTestTenant() {
+		_, err := tc.Servers[0].StartTenant(ctx, base.TestTenantArgs{TenantID: roachpb.
+			MustMakeTenantID(10)})
+		require.NoError(t, err)
+	}
+	sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
+
+	sqlDB = emptyDB
+	sqlDB.Exec(t, "USE system")
+	
+	// Begin a Restore and assert that PTS with the correct target was persisted
+	sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = 'restore.before_flow'`)
+	var jobId jobspb.JobID
+	sqlDB.QueryRow(t, `RESTORE FROM LATEST IN $1 WITH detached`, localFoo).Scan(&jobId)
+	jobutils.WaitForJobToPause(t, sqlDB, jobId)
+
+	// Finish the restore and ensure the PTS record was removed
+	sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = ''`)
+	sqlDB.Exec(t, `RESUME JOB $1`, jobId)
+	jobutils.WaitForJobToSucceed(t, sqlDB, jobId)
 }
 
 // TestProtectRestoreSpans ensures that a protected timestamp is issued before
