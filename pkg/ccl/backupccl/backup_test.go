@@ -8717,7 +8717,7 @@ func TestRestorePauseOnError(t *testing.T) {
 		}
 
 		jobRegistry.(*jobs.Registry).TestingResumerCreationKnobs = map[jobspb.Type]func(raw jobs.Resumer) jobs.
-			Resumer{
+		Resumer{
 			jobspb.TypeRestore: func(raw jobs.Resumer) jobs.Resumer {
 				r := raw.(*restoreResumer)
 				r.testingKnobs.beforePublishingDescriptors = func() error {
@@ -9424,7 +9424,7 @@ func TestProtectRestoreSpans(t *testing.T) {
 		}
 		if subtest.name == "cluster" {
 			// Use the empty cluster for cluster restore
-			// sqlDB = emptyDB
+			sqlDB = emptyDB
 			// sqlDB.Exec(t, "USE system")
 			continue
 		}
