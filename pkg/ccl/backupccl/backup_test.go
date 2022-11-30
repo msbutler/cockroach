@@ -8717,7 +8717,7 @@ func TestRestorePauseOnError(t *testing.T) {
 		}
 
 		jobRegistry.(*jobs.Registry).TestingResumerCreationKnobs = map[jobspb.Type]func(raw jobs.Resumer) jobs.
-		Resumer{
+			Resumer{
 			jobspb.TypeRestore: func(raw jobs.Resumer) jobs.Resumer {
 				r := raw.(*restoreResumer)
 				r.testingKnobs.beforePublishingDescriptors = func() error {
@@ -9355,7 +9355,7 @@ func TestRestoreOIDRace(t *testing.T) {
 
 	sqlDB = emptyDB
 	sqlDB.Exec(t, "USE system")
-	
+
 	// Begin a Restore and assert that PTS with the correct target was persisted
 	sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = 'restore.before_flow'`)
 	var jobId jobspb.JobID
@@ -9424,8 +9424,9 @@ func TestProtectRestoreSpans(t *testing.T) {
 		}
 		if subtest.name == "cluster" {
 			// Use the empty cluster for cluster restore
-			sqlDB = emptyDB
-			sqlDB.Exec(t, "USE system")
+			// sqlDB = emptyDB
+			// sqlDB.Exec(t, "USE system")
+			continue
 		}
 		// Begin a Restore and assert that PTS with the correct target was persisted
 		sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = 'restore.before_flow'`)
