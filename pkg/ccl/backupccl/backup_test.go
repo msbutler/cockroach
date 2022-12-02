@@ -9353,6 +9353,7 @@ func TestProtectRestoreSpans(t *testing.T) {
 			MustMakeTenantID(10)})
 		require.NoError(t, err)
 	}
+	serverutils.SetClusterSetting(t, tc, "admission.elastic_cpu.enabled", false)
 	sqlDB.Exec(t, `BACKUP INTO $1`, localFoo)
 
 	for _, subtest := range []struct {
