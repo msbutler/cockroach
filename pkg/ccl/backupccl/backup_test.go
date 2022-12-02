@@ -9335,7 +9335,8 @@ func TestProtectRestoreSpans(t *testing.T) {
 	numAccounts := 100
 	params := base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
-			Knobs: base.TestingKnobs{JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals()},
+			Knobs:                    base.TestingKnobs{JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals()},
+			DisableDefaultTestTenant: true,
 		},
 	}
 	tc, sqlDB, tempDir, cleanupFn := backupRestoreTestSetupWithParams(t, singleNode,
