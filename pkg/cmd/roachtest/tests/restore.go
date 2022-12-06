@@ -531,7 +531,7 @@ func registerRestore(r registry.Registry) {
 
 			jobIDCh := make(chan jobspb.JobID)
 			jobCompleteCh := make(chan struct{}, 1)
-			maxPauses := 3
+			maxPauses := 1
 			m.Go(func(ctx context.Context) error {
 				// Wait until the restore job has been created.
 				conn, err := c.ConnE(ctx, t.L(), c.Node(1)[0])
