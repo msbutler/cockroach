@@ -348,6 +348,7 @@ func (dataBank2TB) runRestore(ctx context.Context, c cluster.Cluster) {
 				RESTORE csv.bank FROM
 				'gs://cockroach-fixtures/workload/bank/version=1.0.0,payload-bytes=10240,ranges=0,rows=65104166,seed=1/bank?AUTH=implicit'
 				WITH into_db = 'restore2tb'"`)
+
 }
 
 func (dataBank2TB) runRestoreDetached(
@@ -492,6 +493,17 @@ func registerRestore(r registry.Registry) {
 					tick()
 					item.dataSet.runRestore(ctx, c)
 					tick()
+
+					db, err := c.ConnE(ctx, t.L(), c.Node(1)[0])
+					if err != nil {
+						return errors.Wrap(err, "failed to connect to node 1; running restore detached")
+					}
+					var rowCount int
+					err = db.QueryRow(`SELECT count(*) FROM restore2tb.bank`).Scan(&rowCount)
+					if err != nil {
+						return err
+					}
+					t.L().Printf("Final Row Count %s", rowCount)
 
 					// Upload the perf artifacts to any one of the nodes so that the test
 					// runner copies it into an appropriate directory path.
@@ -640,6 +652,18 @@ func registerRestore(r registry.Registry) {
 						}
 					}
 				}
+
+				db, err := c.ConnE(ctx, t.L(), c.Node(1)[0])
+				if err != nil {
+					return errors.Wrap(err, "failed to connect to node 1; running restore detached")
+				}
+
+				var rowCount int
+				err = db.QueryRow(`SELECT count(*) FROM restore2tb.bank`).Scan(&rowCount)
+				if err != nil {
+					return err
+				}
+				t.L().Printf("Final Row Count %s", rowCount)
 
 				// Upload the perf artifacts to any one of the nodes so that the test
 				// runner copies it into an appropriate directory path.
