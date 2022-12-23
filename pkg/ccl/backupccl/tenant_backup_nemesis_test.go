@@ -226,6 +226,7 @@ func TestTenantBackupNemesis(t *testing.T) {
 		t.Logf("backup-nemesis: full backup started")
 		hostSQLDB.Exec(t, fmt.Sprintf("BACKUP TENANT 10 INTO '%s'", backupLoc))
 		t.Logf("backup-nemesis: full backup finished")
+		// The nemesis operation has completed.
 		<-done
 
 		numIncrementals := 30
@@ -445,6 +446,10 @@ func (r *randomBackupNemesis) RequireStart() chan struct{} {
 	r.mu.oneTimeListeners = append(r.mu.oneTimeListeners, notifyCh)
 	r.mu.Unlock()
 	// Wait for the nemesis operation to start.
+	// How?
+	// 	- we are waiting to receive a notification on this channel
+	//  - notifyOneTimeListeners() will send the notification,
+	//    which contains a done channel which closes when the operation completes.
 	newNemesis := <-notifyCh
 	return newNemesis.done
 }

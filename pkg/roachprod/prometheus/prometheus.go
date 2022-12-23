@@ -159,7 +159,7 @@ func (cfg *Config) WithScrapeConfigs(config ...ScrapeConfig) *Config {
 // For more on the node exporter process, see https://prometheus.io/docs/guides/node-exporter/
 func (cfg *Config) WithNodeExporter(nodes install.Nodes) *Config {
 	cfg.NodeExporter = nodes
-	// Add a scrape config for each node running node_exporter
+	// Add a scrape config for each node running node_exporters
 	for _, node := range cfg.NodeExporter {
 		s := strconv.Itoa(int(node))
 		cfg.ScrapeConfigs = append(cfg.ScrapeConfigs, ScrapeConfig{
