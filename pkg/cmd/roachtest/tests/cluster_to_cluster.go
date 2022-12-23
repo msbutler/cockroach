@@ -14,6 +14,9 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -316,6 +319,12 @@ func registerClusterToCluster(r registry.Registry) {
 				m := c.NewMonitor(ctx, setup.src.kvNodes.Merge(setup.dst.kvNodes))
 
 				t.Status("populating source cluster before replication")
+
+				reg := histogram.NewRegistry(
+					timeout,
+					histogram.MockWorkloadName,
+				)
+
 				initStartTime := timeutil.Now()
 				if initCmd := sp.workload.sourceInitCmd(setup.src.tenant.secureURL()); initCmd != "" {
 					c.Run(ctx, c.Node(setup.src.sqlNode), initCmd)
@@ -384,6 +393,28 @@ func registerClusterToCluster(r registry.Registry) {
 			},
 		})
 	} //
+}
+
+func setupTPCCMetrics(reg prometheus.Registerer) {
+	f := promauto.With(reg)
+	f.NewGauge()
+	m[tx.name] = txCounter{
+		success: f.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: histogram.PrometheusNamespace,
+				Subsystem: tpccMeta.Name,
+				Name:      fmt.Sprintf("%s_success_total", tx.name),
+				Help:      fmt.Sprintf("The total number of successful %s transactions.", tx.name),
+			},
+		),
+		error: f.NewCounter(
+			prometheus.CounterOpts{
+				Namespace: histogram.PrometheusNamespace,
+				Subsystem: tpccMeta.Name,
+				Name:      fmt.Sprintf("%s_error_total", tx.name),
+				Help:      fmt.Sprintf("The total number of error %s transactions.", tx.name),
+			}),
+	}
 }
 
 func chooseCutover(
