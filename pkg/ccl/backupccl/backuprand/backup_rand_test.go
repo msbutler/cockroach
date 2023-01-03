@@ -64,6 +64,7 @@ func TestBackupRestoreRandomDataRoundtrips(t *testing.T) {
 		if _, err := tc.Conns[0].Exec(stmt); err != nil {
 			t.Fatal(err)
 		}
+		t.Logf("%s", stmt)
 	}
 	numInserts := 20
 
