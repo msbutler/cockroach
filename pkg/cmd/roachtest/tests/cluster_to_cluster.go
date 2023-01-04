@@ -273,10 +273,12 @@ func registerClusterToCluster(r registry.Registry) {
 			setup.dst.sql.QueryRow(t, "SELECT clock_timestamp()").Scan(&cutoverTime)
 			stopReplicationStream(t, setup.dst.sql, ingestionJobID, cutoverTime)
 
+			startTime := getIngestionJobDetails(t, setup.dst.sql, ingestionJobID).ReplicationStartTime
 			compareTenantFingerprintsAtTimestamp(
 				t,
 				m,
 				setup,
+				startTime,
 				hlc.Timestamp{WallTime: cutoverTime.UnixNano()})
 			lv.assertValid(t)
 		},
@@ -348,7 +350,6 @@ func registerClusterToCluster(r registry.Registry) {
 
 				cutoverTime := chooseCutover(t, setup.dst.sql, workloadDuration, sp.cutover)
 				t.Status("cutover time chosen: %s", cutoverTime.String())
-
 				// TODO(ssd): The job doesn't record the initial
 				// statement time, so we can't correctly measure the
 				// initial scan time here.
@@ -375,10 +376,13 @@ func registerClusterToCluster(r registry.Registry) {
 				// about 30 GB of data. Once the fingerprinting job is used instead,
 				// this should only take about 5 seconds for the same amount of data. At
 				// that point, we should increase the number of warehouses in this test.
+
+				startTime := getIngestionJobDetails(t, setup.dst.sql, ingestionJobID).ReplicationStartTime
 				compareTenantFingerprintsAtTimestamp(
 					t,
 					m,
 					setup,
+					startTime,
 					hlc.Timestamp{WallTime: cutoverTime.UnixNano()})
 				lv.assertValid(t)
 			},
@@ -394,29 +398,38 @@ func chooseCutover(
 	return currentTime.Add(workloadDuration - cutover)
 }
 
+func getIngestionJobDetails(
+	t test.Test, dstSQL *sqlutils.SQLRunner, jobID int,
+) *jobspb.StreamIngestionDetails {
+	ret := &jobspb.Payload{}
+	var buf []byte
+	dstSQL.QueryRow(t, `SELECT payload FROM system.jobs WHERE id = $1`, jobID).Scan(&buf)
+	require.NoError(t, protoutil.Unmarshal(buf, ret))
+	return ret.GetStreamIngestion()
+}
 func compareTenantFingerprintsAtTimestamp(
-	t test.Test, m cluster.Monitor, setup *c2cSetup, ts hlc.Timestamp,
+	t test.Test,
+	m cluster.Monitor,
+	setup *c2cSetup,
+	startTime hlc.Timestamp,
+	cutoverTime hlc.Timestamp,
 ) {
-	fingerprintQuery := fmt.Sprintf(`
-SELECT
-    xor_agg(
-        fnv64(crdb_internal.trim_tenant_prefix(key),
-              substring(value from 5))
-    ) AS fingerprint
-FROM crdb_internal.scan(crdb_internal.tenant_span($1::INT))
-AS OF SYSTEM TIME '%s'`, ts.AsOfSystemTime())
+
+	fingerprintQuery := fmt.Sprintf(`SELECT * FROM crdb_internal.fingerprint(crdb_internal.
+tenant_span($1::INT), '%s'::TIMESTAMPTZ, true) AS OF SYSTEM TIME '%s'`,
+		startTime.AsOfSystemTime(), cutoverTime.AsOfSystemTime())
 
 	var srcFingerprint int64
 	m.Go(func(ctx context.Context) error {
 		setup.src.sql.QueryRow(t, fingerprintQuery, setup.src.ID).Scan(&srcFingerprint)
 		return nil
 	})
-	var destFingerprint int64
-	setup.dst.sql.QueryRow(t, fingerprintQuery, setup.dst.ID).Scan(&destFingerprint)
+	var dstFingerprint int64
+	setup.dst.sql.QueryRow(t, fingerprintQuery, setup.dst.ID).Scan(&dstFingerprint)
 
 	// If the goroutine gets cancelled or fataled, return before comparing fingerprints.
 	require.NoError(t, m.WaitE())
-	require.Equal(t, srcFingerprint, destFingerprint)
+	require.Equal(t, srcFingerprint, dstFingerprint)
 }
 
 type streamIngesitonJobInfo struct {
