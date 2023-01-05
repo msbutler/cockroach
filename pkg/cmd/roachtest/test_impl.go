@@ -26,8 +26,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/version"
 	"github.com/cockroachdb/errors"
 	"github.com/petermattis/goid"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 // perfArtifactsDir is the directory on cluster nodes in which perf artifacts
@@ -113,8 +111,6 @@ type testImpl struct {
 	// Version strings look like "20.1.4".
 	versionsBinaryOverride map[string]string
 	skipInit               bool
-
-	promRegistry *prometheus.Registry
 }
 
 func newFailure(squashedErr error, errs []error) failure {
@@ -420,9 +416,6 @@ func failureContainsError(f failure, refError error) bool {
 	return errors.Is(f.squashedErr, refError)
 }
 
-func (t *testImpl) PromFactory() promauto.Factory {
-	return promauto.With(t.promRegistry)
-}
 func (t *testImpl) ArtifactsDir() string {
 	return t.artifactsDir
 }

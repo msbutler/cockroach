@@ -12,6 +12,7 @@ package registry
 
 import (
 	"context"
+	"regexp"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
@@ -119,4 +120,10 @@ func (t *TestSpec) Match(filter *TestFilter) MatchType {
 		}
 	}
 	return FailedTags
+}
+
+// PromSub replaces all non prometheus friendly chars with "_".
+func PromSub(raw string) string {
+	invalidPromRE := regexp.MustCompile("^[a-zA-Z_][a-zA-Z0-9_]*$")
+	return invalidPromRE.ReplaceAllLiteralString(raw, "_")
 }

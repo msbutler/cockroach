@@ -13,7 +13,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"math/rand"
+	"net/http"
 	"os"
 	"os/signal"
 	"os/user"
@@ -460,7 +462,14 @@ func runTests(register func(registry.Registry), cfg cliCfg) error {
 		literalArtifactsDir: cfg.literalArtifactsDir,
 		runnerLogPath:       runnerLogPath,
 	}
-
+	go func() {
+		if err := http.ListenAndServe(
+			fmt.Sprintf(":%d", cfg.promPort),
+			promhttp.HandlerFor(r.promRegistry, promhttp.HandlerOpts{}),
+		); err != nil {
+			l.Errorf("error serving prometheus: %v", err)
+		}
+	}()
 	// We're going to run all the workers (and thus all the tests) in a context
 	// that gets canceled when the Interrupt signal is received.
 	ctx, cancel := context.WithCancel(context.Background())
@@ -471,7 +480,6 @@ func runTests(register func(registry.Registry), cfg cliCfg) error {
 		testOpts{
 			versionsBinaryOverride: cfg.versionsBinaryOverride,
 			skipInit:               cfg.skipInit,
-			promPort:               cfg.promPort,
 		},
 		lopt, nil /* clusterAllocator */)
 

@@ -663,6 +663,9 @@ func registerRestore(r registry.Registry) {
 		},
 	})
 
+	durationGauge := r.PromFactory().NewGaugeVec(prometheus.GaugeOpts{Namespace: registry.
+		PrometheusNameSpace, Subsystem: "restore", Name: "duration"}, []string{"test"})
+
 	for _, sp := range []restoreSpecs{
 		{
 			name:     "restore/nodes=4",
@@ -691,6 +694,7 @@ func registerRestore(r registry.Registry) {
 			clusterOpts = append(clusterOpts, spec.VolumeSize(sp.hardware.volumeSize))
 		}
 		clusterOpts = append(clusterOpts, spec.CPU(sp.hardware.cpus))
+
 		r.Add(registry.TestSpec{
 			Name:    sp.name,
 			Owner:   registry.OwnerDisasterRecovery,
@@ -707,8 +711,7 @@ func registerRestore(r registry.Registry) {
 				c.Put(ctx, t.Cockroach(), "./cockroach")
 				c.Start(ctx, t.L(), option.DefaultStartOpts(), install.MakeClusterSettings())
 				m := c.NewMonitor(ctx)
-				promGauge := t.PromFactory().NewGauge(prometheus.GaugeOpts{Namespace: registry.PrometheusNameSpace,
-					Subsystem: sp.name, Name: "duration"})
+
 				// Run the disk usage logger in the monitor to guarantee its
 				// having terminated when the test ends.
 				dul := NewDiskUsageLogger(t, c)
@@ -726,8 +729,8 @@ func registerRestore(r registry.Registry) {
 					tick()
 					sp.run(ctx, c)
 					tick()
-					promGauge.Set(timeutil.Since(startTime).Minutes())
-
+					promLabel := registry.PromSub(strings.Replace(sp.name, "restore/", "", 1))
+					durationGauge.WithLabelValues(promLabel).Set(timeutil.Since(startTime).Minutes())
 					// Upload the perf artifacts to any one of the nodes so that the test
 					// runner copies it into an appropriate directory path.
 					dest := filepath.Join(t.PerfArtifactsDir(), "stats.json")
