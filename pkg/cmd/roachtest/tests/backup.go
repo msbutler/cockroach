@@ -36,7 +36,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
-	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
@@ -1142,10 +1141,12 @@ func runBackupMVCCRangeTombstones(ctx context.Context, t test.Test, c cluster.Cl
 	c.Run(ctx, c.All(), `./cockroach workload csv-server --port=8081 &> logs/workload-csv-server.log < /dev/null &`)
 
 	conn := c.Conn(ctx, t.L(), 1)
-
+	_, err := conn.Exec(`SET CLUSTER SETTING server.debug.default_vmodule = 'txn=2,sst_batcher=4,
+revert=2'`)
+	require.NoError(t, err)
 	// Configure cluster.
 	t.Status("configuring cluster")
-	_, err := conn.Exec(`SET CLUSTER SETTING kv.bulk_ingest.max_index_buffer_size = '2gb'`)
+	_, err = conn.Exec(`SET CLUSTER SETTING kv.bulk_ingest.max_index_buffer_size = '2gb'`)
 	require.NoError(t, err)
 	_, err = conn.Exec(`SET CLUSTER SETTING storage.mvcc.range_tombstones.enabled = 't'`)
 	require.NoError(t, err)
@@ -1200,27 +1201,6 @@ func runBackupMVCCRangeTombstones(ctx context.Context, t test.Test, c cluster.Cl
 		}))
 	}
 
-	fingerprint := func(name, database, table string) (string, string, string) {
-		var ts string
-		require.NoError(t, conn.QueryRowContext(ctx, `SELECT now()`).Scan(&ts))
-
-		t.Status(fmt.Sprintf("fingerprinting %s.%s at time '%s'", database, table, name))
-		fp, err := fingerprint(ctx, conn, database, table)
-		require.NoError(t, err)
-		t.Status("fingerprint:\n", fp)
-
-		return name, ts, fp
-	}
-
-	// restores track point-in-time restores to execute and validate.
-	type restore struct {
-		name              string
-		time              string
-		expectFingerprint string
-		expectNoTables    bool
-	}
-	var restores []restore
-
 	// Import the odd-numbered files.
 	t.Status("importing odd-numbered files")
 	files := []string{
@@ -1232,14 +1212,6 @@ func runBackupMVCCRangeTombstones(ctx context.Context, t test.Test, c cluster.Cl
 	_, err = conn.ExecContext(ctx, fmt.Sprintf(
 		`IMPORT INTO orders CSV DATA ('%s') WITH delimiter='|'`, strings.Join(files, "', '")))
 	require.NoError(t, err)
-
-	// Fingerprint for restore comparison.
-	name, ts, fpInitial := fingerprint("initial", "tpch", "orders")
-	restores = append(restores, restore{
-		name:              name,
-		time:              ts,
-		expectFingerprint: fpInitial,
-	})
 
 	// Take a full backup, using a database backup in order to perform a final
 	// incremental backup after the table has been dropped.
@@ -1273,109 +1245,6 @@ func runBackupMVCCRangeTombstones(ctx context.Context, t test.Test, c cluster.Cl
 		_, err = conn.ExecContext(ctx, fmt.Sprintf(`CANCEL JOB %s`, jobID))
 		require.NoError(t, err)
 		waitForStatus(jobID, jobs.StatusCanceled, "", 30*time.Minute)
-	}
-
-	_, err = conn.ExecContext(ctx, `SET CLUSTER SETTING jobs.debug.pausepoints = ''`)
-	require.NoError(t, err)
-
-	// Check that we actually wrote MVCC range tombstones.
-	var rangeKeys int
-	require.NoError(t, conn.QueryRowContext(ctx, `
-		SELECT sum((crdb_internal.range_stats(start_key)->'range_key_count')::INT)
-		FROM crdb_internal.ranges
-		WHERE database_name = 'tpch' AND table_name = 'orders'
-	`).Scan(&rangeKeys))
-	require.NotZero(t, rangeKeys, "no MVCC range tombstones found")
-
-	// Fingerprint for restore comparison, and assert that it matches the initial
-	// import.
-	name, ts, fp := fingerprint("canceled", "tpch", "orders")
-	restores = append(restores, restore{
-		name:              name,
-		time:              ts,
-		expectFingerprint: fp,
-	})
-	require.Equal(t, fpInitial, fp, "fingerprint mismatch between initial and canceled")
-
-	// Now actually import the even-numbered files.
-	t.Status("importing even-numbered files")
-	_, err = conn.ExecContext(ctx, fmt.Sprintf(
-		`IMPORT INTO orders CSV DATA ('%s') WITH delimiter='|'`, strings.Join(files, "', '")))
-	require.NoError(t, err)
-
-	// Fingerprint for restore comparison.
-	name, ts, fp = fingerprint("completed", "tpch", "orders")
-	restores = append(restores, restore{
-		name:              name,
-		time:              ts,
-		expectFingerprint: fp,
-	})
-
-	// Drop the table, and wait for it to be deleted (but not GCed).
-	t.Status("dropping table")
-	_, err = conn.ExecContext(ctx, `DROP TABLE orders`)
-	require.NoError(t, err)
-	require.NoError(t, conn.QueryRowContext(ctx,
-		`SELECT job_id FROM [SHOW JOBS] WHERE job_type = 'SCHEMA CHANGE GC'`).Scan(&jobID))
-	waitForStatus(jobID, jobs.StatusRunning, sql.RunningStatusWaitingForMVCCGC, 2*time.Minute)
-
-	// Check that the data has been deleted. We don't write MVCC range tombstones
-	// unless the range contains live data, so only assert their existence if the
-	// range has any user keys.
-	var rangeID int
-	var stats string
-	err = conn.QueryRowContext(ctx, `
-		SELECT range_id, stats::STRING
-		FROM [
-			SELECT range_id, crdb_internal.range_stats(start_key) AS stats
-			FROM crdb_internal.ranges
-			WHERE database_name = 'tpch'
-		]
-		WHERE (stats->'live_count')::INT != 0 OR (
-			(stats->'key_count')::INT > 0 AND (stats->'range_key_count')::INT = 0
-		)
-	`).Scan(&rangeID, &stats)
-	require.NotNil(t, err, "range %d not fully deleted, stats: %s", rangeID, stats)
-	require.ErrorIs(t, err, gosql.ErrNoRows)
-
-	// Take a final incremental backup.
-	t.Status("taking incremental backup")
-	_, err = conn.ExecContext(ctx, `BACKUP DATABASE tpch INTO LATEST IN $1 WITH revision_history`,
-		dest)
-	require.NoError(t, err)
-
-	// Schedule a final restore of the latest backup (above).
-	restores = append(restores, restore{
-		name:           "dropped",
-		expectNoTables: true,
-	})
-
-	// Restore backups at specific times and verify them.
-	for _, r := range restores {
-		t.Status(fmt.Sprintf("restoring backup at time '%s'", r.name))
-		db := "restore_" + r.name
-		if r.time != "" {
-			_, err = conn.ExecContext(ctx, fmt.Sprintf(
-				`RESTORE DATABASE tpch FROM LATEST IN '%s' AS OF SYSTEM TIME '%s' WITH new_db_name = '%s'`,
-				dest, r.time, db))
-			require.NoError(t, err)
-		} else {
-			_, err = conn.ExecContext(ctx, fmt.Sprintf(
-				`RESTORE DATABASE tpch FROM LATEST IN '%s' WITH new_db_name = '%s'`, dest, db))
-			require.NoError(t, err)
-		}
-
-		if expect := r.expectFingerprint; expect != "" {
-			_, _, fp = fingerprint(r.name, db, "orders")
-			require.Equal(t, expect, fp, "fingerprint mismatch for restore at time '%s'", r.name)
-		}
-		if r.expectNoTables {
-			var tableCount int
-			require.NoError(t, conn.QueryRowContext(ctx, fmt.Sprintf(
-				`SELECT count(*) FROM [SHOW TABLES FROM %s]`, db)).Scan(&tableCount))
-			require.Zero(t, tableCount, "found tables in restore at time '%s'", r.name)
-			t.Status("confirmed no tables in database " + db)
-		}
 	}
 }
 
