@@ -14,6 +14,7 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -405,8 +406,8 @@ func registerClusterToCluster(r registry.Registry) {
 				t.Status("starting replication stream")
 				streamReplStmt := fmt.Sprintf("CREATE TENANT %q FROM REPLICATION OF %q ON '%s'",
 					setup.dst.name, setup.src.name, setup.src.pgURL)
-				var ingestionJobID, streamProducerJobID int
-				setup.dst.sql.QueryRow(t, streamReplStmt).Scan(&ingestionJobID, &streamProducerJobID)
+				setup.dst.sql.Exec(t, streamReplStmt)
+				ingestionJobID := getIngestionJobID(t, setup.dst.sql, setup.dst.name)
 
 				// The replication stream is expected to spend some time conducting an
 				// initial scan, ideally on the same order as the `initDuration`, the
@@ -471,6 +472,14 @@ func registerClusterToCluster(r registry.Registry) {
 			},
 		})
 	}
+}
+func getIngestionJobID(t test.Test, dstSQL *sqlutils.SQLRunner, dstTenantName string) int {
+	var tenantInfoBytes []byte
+	var tenantInfo descpb.TenantInfo
+	dstSQL.QueryRow(t, "SELECT info FROM system.tenants WHERE name=$1",
+		dstTenantName).Scan(&tenantInfoBytes)
+	require.NoError(t, protoutil.Unmarshal(tenantInfoBytes, &tenantInfo))
+	return int(tenantInfo.TenantReplicationJobID)
 }
 
 func chooseCutover(
