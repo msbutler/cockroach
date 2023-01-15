@@ -119,6 +119,7 @@ func (tn *tenantNode) cockroachBinSupportsTenantScope(ctx context.Context, c clu
 	return err == nil
 }
 
+// createTenantCert creates a cert for the sql pods to talk to kv nodes
 func (tn *tenantNode) createTenantCert(
 	ctx context.Context, t test.Test, c cluster.Cluster, certNodes option.NodeListOption,
 ) {

@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
@@ -50,8 +51,8 @@ type clusterInfo struct {
 	// pgurl is a connection string to the host cluster
 	pgURL string
 
-	// tenant provides a handler to the tenant
-	tenant *tenantNode
+	// tenantNodes provides a handler to the tenant pods
+	tenantNodes []*tenantNode
 
 	// db provides a connection to the host cluster
 	db *gosql.DB
@@ -59,8 +60,8 @@ type clusterInfo struct {
 	// sql provides a sql connection to the host cluster
 	sql *sqlutils.SQLRunner
 
-	// sqlNode indicates the roachprod node running a single sql server
-	sqlNode int
+	// workloadNode indicates the roachprod node running a single sql server
+	workloadNode int
 
 	// kvNodes indicates the roachprod nodes running the cluster's kv nodes
 	kvNodes option.NodeListOption
@@ -193,8 +194,8 @@ func setupC2C(
 	c.Put(ctx, t.Cockroach(), "./cockroach")
 	srcCluster := c.Range(1, srcKVNodes)
 	dstCluster := c.Range(srcKVNodes+1, srcKVNodes+dstKVNodes)
-	srcTenantNode := srcKVNodes + dstKVNodes + 1
-	c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(srcTenantNode))
+	workloadNode := srcKVNodes + dstKVNodes + 1
+	c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(workloadNode))
 
 	srcStartOps := option.DefaultStartOpts()
 	srcStartOps.RoachprodOpts.InitTarget = 1
@@ -229,27 +230,58 @@ func setupC2C(
 		srcClusterSetting.PGUrlCertsDir, addr[0])
 	require.NoError(t, err)
 
+	numInstances := srcKVNodes
 	const (
-		tenantHTTPPort = 8081
-		tenantSQLPort  = 30258
+		tenantBaseHTTPPort = 8081
+		tenantBaseSQLPort  = 30258
 	)
-	t.Status("creating tenant node")
-	srcTenant := createTenantNode(ctx, t, c, srcCluster, srcTenantID, srcTenantNode, tenantHTTPPort, tenantSQLPort)
-	srcTenant.start(ctx, t, c, "./cockroach")
+	tenantHTTPPort := func(offset int) int {
+		if c.IsLocal() || numInstances > c.Spec().NodeCount {
+			return tenantBaseHTTPPort + offset
+		}
+		return tenantBaseHTTPPort
+	}
+	tenantSQLPort := func(offset int) int {
+		if c.IsLocal() || numInstances > c.Spec().NodeCount {
+			return tenantBaseSQLPort + offset
+		}
+		return tenantBaseSQLPort
+	}
+	t.Status("creating tenant nodes")
+
+	instances := make([]*tenantNode, 0, numInstances)
+	instanceStoppers := make([]func(ctx context.Context, t test.Test, c cluster.Cluster), 0, numInstances)
+
+	for i := 0; i < numInstances; i++ {
+		var inst *tenantNode
+		if i == 0 {
+			inst = createTenantNode(ctx, t, c, srcCluster, srcTenantID, i+1, tenantHTTPPort(i),
+				tenantSQLPort(i), createTenantCertNodes(srcCluster.Merge(option.NodeListOption{workloadNode})))
+		} else {
+			inst, err = newTenantInstance(ctx, instances[0], t, c, i, tenantHTTPPort(i), tenantSQLPort(i))
+			require.NoError(t, err)
+		}
+		instances = append(instances, inst)
+		instanceStoppers = append(instanceStoppers, inst.stop)
+		inst.start(ctx, t, c, "./cockroach")
+	}
+
 	cleanup := func() {
-		srcTenant.stop(ctx, t, c)
+		for _, stopper := range instanceStoppers {
+			stopper(ctx, t, c)
+		}
 		pgCleanup()
 	}
 
 	srcTenantInfo := clusterInfo{
-		name:    srcTenantName,
-		ID:      srcTenantID,
-		pgURL:   pgURL,
-		tenant:  srcTenant,
-		sql:     srcSQL,
-		db:      srcDB,
-		sqlNode: srcTenantNode,
-		kvNodes: srcCluster}
+		name:         srcTenantName,
+		ID:           srcTenantID,
+		pgURL:        pgURL,
+		sql:          srcSQL,
+		db:           srcDB,
+		tenantNodes:  instances,
+		workloadNode: workloadNode,
+		kvNodes:      srcCluster}
 	destTenantInfo := clusterInfo{
 		name:    destTenantName,
 		ID:      destTenantID,
@@ -266,20 +298,28 @@ func setupC2C(
 	createSystemRole(t, srcTenantInfo.name+" system tenant", srcTenantInfo.sql)
 	createSystemRole(t, destTenantInfo.name+" system tenant", destTenantInfo.sql)
 
-	tenantConn, err := srcTenant.conn()
+	tenantConn, err := instances[0].conn()
 	require.NoError(t, err)
 	createSystemRole(t, destTenantInfo.name+" app tenant", sqlutils.MakeSQLRunner(tenantConn))
 	t.L().Printf(`To open a sql session on the app tenant, ssh to the tenant node and run:
-  ./cockroach sql url="%s"`, srcTenant.secureURL())
+  ./cockroach sql url="%s"`, instances[0].secureURL())
 	t.L().Printf(`To open the app tenant's db console, run:
-  1. roachprod adminui $CLUSTER:%d
+  1. roachprod adminui $CLUSTER:1
   2. change the port in the url to %d
-`, srcTenantNode, tenantHTTPPort)
+`, tenantHTTPPort)
 
 	return &c2cSetup{
 		src:     srcTenantInfo,
 		dst:     destTenantInfo,
 		metrics: c2cMetrics{}}, cleanup
+}
+
+func tenantPGURLs(tenantNodes []*tenantNode) string {
+	var build strings.Builder
+	for _, tn := range tenantNodes {
+		build.WriteString(fmt.Sprintf(`'%s' `, tn.secureURL()))
+	}
+	return build.String()
 }
 
 // createSystemRole creates a role that can be used to log into the cluster's db console
@@ -306,13 +346,13 @@ type replicateTPCC struct {
 }
 
 func (tpcc replicateTPCC) sourceInitCmd(pgURL string) string {
-	return fmt.Sprintf(`./workload init tpcc --data-loader import --warehouses %d '%s'`,
+	return fmt.Sprintf(`./workload init tpcc --data-loader import --warehouses %d %s`,
 		tpcc.warehouses, pgURL)
 }
 
 func (tpcc replicateTPCC) sourceRunCmd(pgURL string) string {
 	// added --tolerate-errors flags to prevent test from flaking due to a transaction retry error
-	return fmt.Sprintf(`./workload run tpcc --warehouses %d --tolerate-errors '%s'`,
+	return fmt.Sprintf(`./workload run tpcc --warehouses %d --tolerate-errors %s`,
 		tpcc.warehouses, pgURL)
 }
 
@@ -326,7 +366,7 @@ func (kv replicateKV) sourceInitCmd(pgURL string) string {
 
 func (kv replicateKV) sourceRunCmd(pgURL string) string {
 	// added --tolerate-errors flags to prevent test from flaking due to a transaction retry error
-	return fmt.Sprintf(`./workload run kv --tolerate-errors --init --read-percent %d '%s'`,
+	return fmt.Sprintf(`./workload run kv --tolerate-errors --init --read-percent %d %s`,
 		kv.readPercent,
 		pgURL)
 }
@@ -408,16 +448,20 @@ func registerClusterToCluster(r registry.Registry) {
 				defer cleanup()
 
 				t.L().Printf("tenant secureURL: %s; http port: %s; sql port: %s",
-					setup.src.tenant.secureURL(), setup.src.tenant.httpPort, setup.src.tenant.sqlPort)
+					setup.src.tenantNodes[0].secureURL(), setup.src.tenantNodes[0].httpPort,
+					setup.src.tenantNodes[0].sqlPort)
 
 				m := c.NewMonitor(ctx, setup.src.kvNodes.Merge(setup.dst.kvNodes))
 				du, err := NewDiskUsageTracker(c, t.L())
 				require.NoError(t, err)
+				// CREATE AN IN MEMORY TENANT TO CONNECT TO INSTEAD.
+				//I'm just not sure how the process would work.
 				var initDuration time.Duration
-				if initCmd := sp.workload.sourceInitCmd(setup.src.tenant.secureURL()); initCmd != "" {
+				tenantURLs := tenantPGURLs(setup.src.tenantNodes)
+				if initCmd := sp.workload.sourceInitCmd(tenantURLs); initCmd != "" {
 					t.Status("populating source cluster before replication")
 					setup.metrics.start = newSizeTime(ctx, du, setup.src.kvNodes)
-					c.Run(ctx, c.Node(setup.src.sqlNode), initCmd)
+					c.Run(ctx, c.Node(setup.src.workloadNode), initCmd)
 					setup.metrics.initialScanEnd = newSizeTime(ctx, du, setup.src.kvNodes)
 
 					initDuration = setup.metrics.initialScanEnd.time.Sub(setup.metrics.start.time)
@@ -430,9 +474,8 @@ func registerClusterToCluster(r registry.Registry) {
 
 				workloadDoneCh := make(chan struct{})
 				go func() {
-					err := c.RunE(workloadCtx, c.Node(setup.src.sqlNode),
-						sp.workload.sourceRunCmd(setup.src.tenant.
-							secureURL()))
+					err := c.RunE(workloadCtx, c.Node(setup.src.workloadNode),
+						sp.workload.sourceRunCmd(tenantURLs))
 					// The workload should only stop if the workloadCtx is cancelled once
 					// sp.additionalDuration has elapsed after the initial scan completes.
 					if workloadCtx.Err() == nil {
