@@ -194,7 +194,7 @@ func setupC2C(
 	c.Put(ctx, t.Cockroach(), "./cockroach")
 	srcCluster := c.Range(1, srcKVNodes)
 	dstCluster := c.Range(srcKVNodes+1, srcKVNodes+dstKVNodes)
-	workloadNode := srcKVNodes + dstKVNodes + 1
+	workloadNode := 1
 	c.Put(ctx, t.DeprecatedWorkload(), "./workload", c.Node(workloadNode))
 
 	srcStartOps := option.DefaultStartOpts()
@@ -306,7 +306,7 @@ func setupC2C(
 	t.L().Printf(`To open the app tenant's db console, run:
   1. roachprod adminui $CLUSTER:1
   2. change the port in the url to %d
-`, tenantHTTPPort)
+`, instances[0].httpPort)
 
 	return &c2cSetup{
 		src:     srcTenantInfo,
@@ -435,7 +435,7 @@ func registerClusterToCluster(r registry.Registry) {
 			cutover:            30 * time.Minute,
 		},
 		{
-			name:       "c2c/tpcc/warehouses=1000/duration=300/cutover=150",
+			name:       "c2c/tpcc/warehouses=1000/duration=180/cutover=90",
 			srcKVNodes: 4,
 			dstKVNodes: 4,
 			cpus:       8,
@@ -446,8 +446,8 @@ func registerClusterToCluster(r registry.Registry) {
 			// job speeds up.
 			workload:           replicateTPCC{warehouses: 1000},
 			timeout:            18 * time.Hour,
-			additionalDuration: 300 * time.Minute,
-			cutover:            150 * time.Minute,
+			additionalDuration: 180 * time.Minute,
+			cutover:            90 * time.Minute,
 		},
 		{
 			name:               "c2c/kv0",
