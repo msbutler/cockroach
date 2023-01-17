@@ -300,7 +300,7 @@ func setupC2C(
 
 	tenantConn, err := instances[0].conn()
 	require.NoError(t, err)
-	createSystemRole(t, destTenantInfo.name+" app tenant", sqlutils.MakeSQLRunner(tenantConn))
+	createSystemRole(t, srcTenantInfo.name+" app tenant", sqlutils.MakeSQLRunner(tenantConn))
 	t.L().Printf(`To open a sql session on the app tenant, ssh to the tenant node and run:
   ./cockroach sql url="%s"`, instances[0].secureURL())
 	t.L().Printf(`To open the app tenant's db console, run:
@@ -398,12 +398,14 @@ type replicationTestSpec struct {
 
 	// timeout specifies when the roachtest should fail due to timeout.
 	timeout time.Duration
+
+	fingerprint bool
 }
 
 func registerClusterToCluster(r registry.Registry) {
 	for _, sp := range []replicationTestSpec{
 		{
-			name:       "c2c/tpcc/warehouses=500/duration=10/cutover=5",
+			name:       "c2c/tpcc/warehouses=1000/duration=10/cutover=5",
 			srcKVNodes: 4,
 			dstKVNodes: 4,
 			cpus:       8,
@@ -412,10 +414,40 @@ func registerClusterToCluster(r registry.Registry) {
 			//
 			// TODO(msbutler): increase default test to 1000 warehouses once fingerprinting
 			// job speeds up.
-			workload:           replicateTPCC{warehouses: 500},
-			timeout:            1 * time.Hour,
+			workload:           replicateTPCC{warehouses: 1000},
+			timeout:            2 * time.Hour,
 			additionalDuration: 10 * time.Minute,
 			cutover:            5 * time.Minute,
+		},
+		{
+			name:       "c2c/tpcc/warehouses=1000/duration=60/cutover=30",
+			srcKVNodes: 4,
+			dstKVNodes: 4,
+			cpus:       8,
+			pdSize:     1000,
+			// 500 warehouses adds 30 GB to source
+			//
+			// TODO(msbutler): increase default test to 1000 warehouses once fingerprinting
+			// job speeds up.
+			workload:           replicateTPCC{warehouses: 1000},
+			timeout:            5 * time.Hour,
+			additionalDuration: 60 * time.Minute,
+			cutover:            30 * time.Minute,
+		},
+		{
+			name:       "c2c/tpcc/warehouses=1000/duration=300/cutover=150",
+			srcKVNodes: 4,
+			dstKVNodes: 4,
+			cpus:       8,
+			pdSize:     1000,
+			// 500 warehouses adds 30 GB to source
+			//
+			// TODO(msbutler): increase default test to 1000 warehouses once fingerprinting
+			// job speeds up.
+			workload:           replicateTPCC{warehouses: 1000},
+			timeout:            18 * time.Hour,
+			additionalDuration: 300 * time.Minute,
+			cutover:            150 * time.Minute,
 		},
 		{
 			name:               "c2c/kv0",
@@ -549,12 +581,15 @@ func registerClusterToCluster(r registry.Registry) {
 				//
 				// The new fingerprinting job currently OOMs this test. Once it becomes
 				// more efficient, it will be used.
-				compareTenantFingerprintsAtTimestamp(
-					t,
-					m,
-					setup,
-					hlc.Timestamp{WallTime: cutoverTime.UnixNano()})
-				lv.assertValid(t)
+				if sp.fingerprint {
+					compareTenantFingerprintsAtTimestamp(
+						t,
+						m,
+						setup,
+						hlc.Timestamp{WallTime: cutoverTime.UnixNano()})
+					lv.assertValid(t)
+				}
+
 			},
 		})
 	}
