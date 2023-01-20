@@ -342,19 +342,29 @@ type replicationTestSpec struct {
 func registerClusterToCluster(r registry.Registry) {
 	for _, sp := range []replicationTestSpec{
 		{
-			name:     "c2c/tpcc/warehouses=500/duration=10/cutover=5",
+			// This is the lightest weight c2c/tpcc, primarily used to bisect perf regressions.
+			name:     "c2c/tpcc/warehouses=100/duration=10/cutover=5",
+			srcNodes: 4,
+			dstNodes: 4,
+			cpus:     4,
+			pdSize:   100,
+			// 100 warehouses adds about 12 GB to source
+			workload:           replicateTPCC{warehouses: 100},
+			timeout:            1 * time.Hour,
+			additionalDuration: 10 * time.Minute,
+			cutover:            5 * time.Minute,
+		},
+		{
+			name:     "c2c/tpcc/warehouses=1000/duration=60/cutover=30",
 			srcNodes: 4,
 			dstNodes: 4,
 			cpus:     8,
 			pdSize:   1000,
-			// 500 warehouses adds 30 GB to source
-			//
-			// TODO(msbutler): increase default test to 1000 warehouses once fingerprinting
-			// job speeds up.
-			workload:           replicateTPCC{warehouses: 500},
-			timeout:            1 * time.Hour,
-			additionalDuration: 10 * time.Minute,
-			cutover:            5 * time.Minute,
+			// 1000 warehouses adds 60 GB to source
+			workload:           replicateTPCC{warehouses: 1000},
+			timeout:            4 * time.Hour,
+			additionalDuration: 60 * time.Minute,
+			cutover:            30 * time.Minute,
 		},
 		{
 			name:               "c2c/kv0",
@@ -457,16 +467,6 @@ func registerClusterToCluster(r registry.Registry) {
 				stopReplicationStream(t, setup.dst.sql, ingestionJobID, cutoverTime)
 				setup.metrics.cutoverEnd = newSizeTime(ctx, du, setup.dst.nodes)
 
-				t.Status("comparing fingerprints")
-				compareTenantFingerprintsAtTimestamp(
-					t,
-					m,
-					setup,
-					retainedTime,
-					cutoverTime,
-				)
-				lv.assertValid(t)
-
 				// TODO(msbutler): export metrics to roachperf or prom/grafana
 				exportedMetrics := setup.metrics.export()
 				t.L().Printf(`Initial Scan: Duration, Size, Throughput; Cutover: Duration, Size, Throughput`)
@@ -481,6 +481,16 @@ func registerClusterToCluster(r registry.Registry) {
 				for key, metric := range exportedMetrics {
 					t.L().Printf("%s: %s", key, metric.String())
 				}
+				t.Status("comparing fingerprints")
+				compareTenantFingerprintsAtTimestamp(
+					t,
+					m,
+					setup,
+					retainedTime,
+					cutoverTime,
+				)
+				lv.assertValid(t)
+
 			},
 		})
 	}
