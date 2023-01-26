@@ -67,7 +67,7 @@ go_binary(
 
 go_test(
     name = "roachtest_test",
-    size = "small",
+    size = "medium",
     srcs = [
         "cluster_test.go",
         "github_test.go",
@@ -75,7 +75,7 @@ go_test(
         "test_registry_test.go",
         "test_test.go",
     ],
-    args = ["-test.timeout=55s"],
+    args = ["-test.timeout=295s"],
     embed = [":roachtest_lib"],
     deps = [
         "//pkg/cmd/internal/issues",

@@ -348,10 +348,13 @@ func (r *testRunner) Run(
 	// To ensure all prometheus metrics have been scraped, ensure shutdown takes
 	// at least one scrapeInterval, unless the roachtest fails or gets cancelled.
 	if shutdownSleep := prometheusScrapeInterval - timeutil.Since(shutdownStart); shutdownSleep > 0 {
+		fmt.Println(fmt.Sprintf(`shutdown interval %f seconds. time now: %s`, shutdownSleep.Seconds(),
+			time.Now()))
 		select {
 		case <-r.stopper.ShouldQuiesce():
 		case <-time.After(shutdownSleep):
 		}
+		fmt.Println(fmt.Sprintf(`wait completed: %s`, time.Now()))
 	}
 	return nil
 }
