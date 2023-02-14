@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
+	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/clusterstats"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/option"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/registry"
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
@@ -30,6 +31,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/install"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/logger"
+	"github.com/cockroachdb/cockroach/pkg/roachprod/prometheus"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -65,6 +67,78 @@ type c2cSetup struct {
 	dst          clusterInfo
 	workloadNode option.NodeListOption
 	metrics      c2cMetrics
+	promCfg      *prometheus.Config
+}
+
+var (
+	// localBytes is the replication_logical_bytes prom metric.
+	c2cLogicalBytes = clusterstats.ClusterStat{
+		LabelName: "node",
+		Query:     "replication_logical_bytes"}
+
+	c2cLogicalThroughput = clusterstats.AggQuery{
+		Stat:  c2cLogicalBytes,
+		Query: "avg(rate(replication_logical_bytes[1m])) / 1e6",
+		Tag:   "Throughput (MB/S/Node)",
+	}
+
+	c2cReplicatedPhysicalBytes = clusterstats.ClusterStat{
+		LabelName: "node",
+		Query:     "capacity - capacity_available",
+	}
+
+	c2cReplcatedPhysicalBytesThroughput = clusterstats.AggQuery{
+		Stat:  c2cReplicatedPhysicalBytes,
+		Query: "avg(rate(capacity)[1m]-rate(capacity_available)[1m]) / 1e6",
+		Tag:   "Throughput (MB/S/Node)",
+	}
+)
+
+func (cc *c2cSetup) startStatsCollection(
+	ctx context.Context, t test.Test, c cluster.Cluster,
+) func(startTime, endTime time.Time) int64 {
+	// TODO(msbutler): figure out why we need to pass a grafana dashboard for this to work
+	cfg := (&prometheus.Config{}).
+		WithPrometheusNode(cc.workloadNode.InstallNodes()[0]).
+		WithCluster(cc.dst.nodes.InstallNodes()).
+		WithNodeExporter(cc.dst.nodes.InstallNodes()).
+		WithGrafanaDashboard("https://go.crdb.dev/p/changefeed-roachtest-grafana-dashboard")
+
+	require.NoError(t, c.StartGrafana(ctx, t.L(), cfg))
+	t.L().Printf("Prom has started")
+
+	client, err := clusterstats.SetupCollectorPromClient(ctx, c, t.L(), cfg)
+	require.NoError(t, err, "error creating prometheus client for stats collector")
+	collector := clusterstats.NewStatsCollector(ctx, client)
+
+	return func(startTime, endTime time.Time) int64 {
+		res, err := collector.Exporter().Export(ctx, c, t, true, /* dryRun */
+			startTime,
+			endTime,
+			[]clusterstats.AggQuery{c2cLogicalThroughput, c2cReplcatedPhysicalBytesThroughput},
+			func(stats map[string]clusterstats.StatSummary) (string, float64) {
+				ret, name := 0.0, "Logical Unreplicated Throughput"
+				if stat, ok := stats[c2cLogicalBytes.Query]; ok {
+					ret = roundFraction(arithmeticMean(stat.Value), 1, 2)
+				}
+				return name, ret
+			},
+			func(stats map[string]clusterstats.StatSummary) (string, float64) {
+				ret, name := 0.0, "Physical Replicated Throughput"
+				if stat, ok := stats[c2cReplicatedPhysicalBytes.Query]; ok {
+					ret = roundFraction(arithmeticMean(stat.Value), 1, 2)
+				}
+				return name, ret
+			},
+		)
+		if err != nil {
+			t.L().Errorf("Prom scrape failed with %s", err.Error())
+		}
+		require.NoError(t, err)
+		fmt.Print(res.Stats)
+		fmt.Print(res.Total)
+		return 0
+	}
 }
 
 // DiskUsageTracker can grab the disk usage of the provided cluster.
@@ -125,39 +199,38 @@ func (em exportedMetric) String() string {
 	return fmt.Sprintf("%.2f", em.metric)
 }
 
-// sizeTime captures the disk size of the nodes at some moment in time
-type sizeTime struct {
-	// size is the megabytes of the objects
-	size      int
-	time      time.Time
-	nodeCount int
+// dstProgressTime captures certain measures replicatedPhysicalSize of the nodes at some moment in time
+type aggMetricsSnapshot struct {
+	// replicatedPhysicalSize is the megabytes of the objects
+	replicatedPhysicalSize int
+	time                   time.Time
+	nodeCount              int
 }
 
-func newSizeTime(ctx context.Context, du *DiskUsageTracker, nodes option.NodeListOption) sizeTime {
-	return sizeTime{
-		size:      du.GetDiskUsage(ctx, nodes),
-		time:      timeutil.Now(),
-		nodeCount: len(nodes),
+func newAggMetricsSnapshot(ctx context.Context, du *DiskUsageTracker, nodes option.NodeListOption) aggMetricsSnapshot {
+	currentTime := timeutil.Now()
+	return aggMetricsSnapshot{
+		replicatedPhysicalSize: du.GetDiskUsage(ctx, nodes),
+		time:                   currentTime,
+		nodeCount:              len(nodes),
 	}
 }
 
 // diskDiffThroughput estimates throughput between two time intervals as mb/s/node by assuming
 // that the total bytes written between the time intervals is diskUsage_End - diskUsage_Start.
-func diskDiffThroughput(start sizeTime, end sizeTime) float64 {
-	if start.nodeCount != end.nodeCount {
-		panic("node count cannot change while measuring throughput")
-	}
-	return (float64(end.size-start.size) / end.time.Sub(start.time).Seconds()) / float64(start.nodeCount)
+func diskDiffThroughput(start aggMetricsSnapshot, end aggMetricsSnapshot) float64 {
+	return (float64(end.replicatedPhysicalSize-start.replicatedPhysicalSize) / end.time.Sub(start.
+		time).Seconds()) / float64(start.nodeCount)
 }
 
 type c2cMetrics struct {
-	start sizeTime
+	start aggMetricsSnapshot
 
-	initialScanEnd sizeTime
+	initialScanEnd aggMetricsSnapshot
 
-	cutoverStart sizeTime
+	cutoverStart aggMetricsSnapshot
 
-	cutoverEnd sizeTime
+	cutoverEnd aggMetricsSnapshot
 
 	fingerprintingStart time.Time
 
@@ -167,21 +240,20 @@ type c2cMetrics struct {
 func (m c2cMetrics) export() map[string]exportedMetric {
 	metrics := map[string]exportedMetric{}
 
-	populate := func(start sizeTime, end sizeTime, label string) {
+	populate := func(start aggMetricsSnapshot, end aggMetricsSnapshot, label string) {
+		if start.replicatedPhysicalSize != 0 || end.replicatedPhysicalSize == 0 {
+			return
+		}
 		metrics[label+"Duration"] = newMetric(end.time.Sub(start.time).Minutes(), "Minutes")
 
-		// Describes the cluster size difference between two timestamps.
-		metrics[label+"Size"] = newMetric(float64(end.size-start.size), "MB")
+		// Describes the cluster replicatedPhysicalSize difference between two timestamps.
+		metrics[label+"Size"] = newMetric(float64(end.replicatedPhysicalSize-start.replicatedPhysicalSize), "MB")
 		metrics[label+"Throughput"] = newMetric(diskDiffThroughput(start, end), "MB/S/Node")
 
 	}
-	if m.initialScanEnd.nodeCount != 0 {
-		populate(m.start, m.initialScanEnd, "InitialScan")
-	}
 
-	if m.cutoverEnd.nodeCount != 0 {
-		populate(m.cutoverStart, m.cutoverEnd, "Cutover")
-	}
+	populate(m.start, m.initialScanEnd, "InitialScan")
+	populate(m.cutoverStart, m.cutoverEnd, "Cutover")
 	return metrics
 }
 
@@ -195,12 +267,14 @@ func setupC2C(
 	workloadNode := c.Node(srcKVNodes + dstKVNodes + 1)
 	c.Put(ctx, t.DeprecatedWorkload(), "./workload", workloadNode)
 
-	srcStartOps := option.DefaultStartOpts()
+	// TODO(msbutler): allow for backups once this test stabilizes a bit more.
+	srcStartOps := option.DefaultStartOptsNoBackups()
 	srcStartOps.RoachprodOpts.InitTarget = 1
 	srcClusterSetting := install.MakeClusterSettings(install.SecureOption(true))
 	c.Start(ctx, t.L(), srcStartOps, srcClusterSetting, srcCluster)
 
-	dstStartOps := option.DefaultStartOpts()
+	// TODO(msbutler): allow for backups once this test stabilizes a bit more.
+	dstStartOps := option.DefaultStartOptsNoBackups()
 	dstStartOps.RoachprodOpts.InitTarget = srcKVNodes + 1
 	dstClusterSetting := install.MakeClusterSettings(install.SecureOption(true))
 	c.Start(ctx, t.L(), dstStartOps, dstClusterSetting, dstCluster)
@@ -245,11 +319,13 @@ func setupC2C(
 		db:    destDB,
 		nodes: dstCluster}
 
-	return &c2cSetup{
+	setup := &c2cSetup{
 		src:          srcTenantInfo,
 		dst:          destTenantInfo,
 		workloadNode: workloadNode,
 		metrics:      c2cMetrics{}}
+
+	return setup
 }
 
 type streamingWorkload interface {
@@ -339,6 +415,36 @@ func registerClusterToCluster(r registry.Registry) {
 			cutover:            5 * time.Minute,
 		},
 		{
+			name:     "c2c/tpcc/warehouses=500/duration=60/cutover=30",
+			srcNodes: 4,
+			dstNodes: 4,
+			cpus:     8,
+			pdSize:   1000,
+			// 500 warehouses adds 30 GB to source
+			//
+			// TODO(msbutler): increase default test to 1000 warehouses once fingerprinting
+			// job speeds up.
+			workload:           replicateTPCC{warehouses: 500},
+			timeout:            5 * time.Hour,
+			additionalDuration: 60 * time.Minute,
+			cutover:            30 * time.Minute,
+		},
+		{
+			name:     "c2c/tpcc/warehouses=1000/duration=60/cutover=30",
+			srcNodes: 4,
+			dstNodes: 4,
+			cpus:     8,
+			pdSize:   1000,
+			// 500 warehouses adds 30 GB to source
+			//
+			// TODO(msbutler): increase default test to 1000 warehouses once fingerprinting
+			// job speeds up.
+			workload:           replicateTPCC{warehouses: 1000},
+			timeout:            5 * time.Hour,
+			additionalDuration: 60 * time.Minute,
+			cutover:            30 * time.Minute,
+		},
+		{
 			name:               "c2c/kv0",
 			srcNodes:           3,
 			dstNodes:           3,
@@ -364,20 +470,23 @@ func registerClusterToCluster(r registry.Registry) {
 			Timeout:         sp.timeout,
 			RequiresLicense: true,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+
 				setup := setupC2C(ctx, t, c, sp.srcNodes, sp.dstNodes)
 				m := c.NewMonitor(ctx, setup.src.nodes.Merge(setup.dst.nodes))
 				du, err := NewDiskUsageTracker(c, t.L())
 				require.NoError(t, err)
+				statGrabber := setup.startStatsCollection(ctx, t, c)
 				var initDuration time.Duration
 				if initCmd := sp.workload.sourceInitCmd(setup.src.name, setup.src.nodes); initCmd != "" {
 					t.Status("populating source cluster before replication")
-					setup.metrics.start = newSizeTime(ctx, du, setup.src.nodes)
+					setup.metrics.start = newAggMetricsSnapshot(ctx, du, setup.src.nodes)
 					c.Run(ctx, setup.workloadNode, initCmd)
-					setup.metrics.initialScanEnd = newSizeTime(ctx, du, setup.src.nodes)
+					setup.metrics.initialScanEnd = newAggMetricsSnapshot(ctx, du, setup.src.nodes)
 
 					initDuration = setup.metrics.initialScanEnd.time.Sub(setup.metrics.start.time)
 					t.L().Printf("src cluster workload initialization took %s minutes", initDuration)
 				}
+				beforeSetup := timeutil.Now()
 
 				t.L().Printf("begin workload on src cluster")
 				workloadCtx, workloadCancel := context.WithCancel(ctx)
@@ -413,10 +522,9 @@ func registerClusterToCluster(r registry.Registry) {
 				m.Go(func(ctx context.Context) error {
 					return lv.pollLatency(ctx, setup.dst.db, ingestionJobID, time.Second, workloadDoneCh)
 				})
-
+				statGrabber(beforeSetup, timeutil.Now())
 				t.L().Printf("waiting for replication stream to finish ingesting initial scan")
 				waitForHighWatermark(t, setup.dst.db, ingestionJobID, sp.timeout/2)
-
 				t.Status(fmt.Sprintf(`initial scan complete. run workload and repl. stream for another %s minutes`,
 					sp.additionalDuration))
 
@@ -435,21 +543,14 @@ func registerClusterToCluster(r registry.Registry) {
 				}
 				t.Status(fmt.Sprintf("waiting for replication stream to cutover to %s", cutoverTime.String()))
 				retainedTime := getReplicationRetainedTime(t, setup.dst.sql, roachpb.TenantName(setup.dst.name))
-				setup.metrics.cutoverStart = newSizeTime(ctx, du, setup.dst.nodes)
+				setup.metrics.cutoverStart = newAggMetricsSnapshot(ctx, du, setup.dst.nodes)
 				stopReplicationStream(t, setup.dst.sql, ingestionJobID, cutoverTime)
-				setup.metrics.cutoverEnd = newSizeTime(ctx, du, setup.dst.nodes)
-
-				t.Status("comparing fingerprints")
-				compareTenantFingerprintsAtTimestamp(
-					t,
-					m,
-					setup,
-					retainedTime,
-					cutoverTime,
-				)
-				lv.assertValid(t)
+				setup.metrics.cutoverEnd = newAggMetricsSnapshot(ctx, du, setup.dst.nodes)
 
 				// TODO(msbutler): export metrics to roachperf or prom/grafana
+				statsAfter := statGrabber(beforeSetup, timeutil.Now())
+				t.L().Printf("Logical bytes ingested %d", statsAfter)
+
 				exportedMetrics := setup.metrics.export()
 				t.L().Printf(`Initial Scan: Duration, Size, Throughput; Cutover: Duration, Size, Throughput`)
 				t.L().Printf(`%s  %s  %s  %s  %s  %s`,
@@ -463,6 +564,17 @@ func registerClusterToCluster(r registry.Registry) {
 				for key, metric := range exportedMetrics {
 					t.L().Printf("%s: %s", key, metric.String())
 				}
+
+				t.Status("comparing fingerprints")
+				compareTenantFingerprintsAtTimestamp(
+					t,
+					m,
+					setup,
+					retainedTime,
+					cutoverTime,
+				)
+				lv.assertValid(t)
+
 			},
 		})
 	}
@@ -607,11 +719,25 @@ func stopReplicationStream(
 }
 
 func srcClusterSettings(t test.Test, db *sqlutils.SQLRunner) {
-	db.ExecMultiple(t, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`)
+	db.ExecMultiple(t, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.burst_limit_seconds = 10000;`,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.rate_limit = -1000; `,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.read_batch_cost = 0;`,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.read_cost_per_mebibyte = 0;`,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.write_cost_per_megabyte = 0;`,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.write_request_cost = 0;`)
 }
 
 func destClusterSettings(t test.Test, db *sqlutils.SQLRunner) {
 	db.ExecMultiple(t, `SET CLUSTER SETTING cross_cluster_replication.enabled = true;`)
+	db.ExecMultiple(t, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.burst_limit_seconds = 10000;`,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.rate_limit = -1000; `,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.read_batch_cost = 0;`,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.read_cost_per_mebibyte = 0;`,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.write_cost_per_megabyte = 0;`,
+		`SET CLUSTER SETTING kv.tenant_rate_limiter.write_request_cost = 0;`,
+		`SET CLUSTER SETTING cross_cluster_replication.enabled = true;`)
 }
 
 func copyPGCertsAndMakeURL(
