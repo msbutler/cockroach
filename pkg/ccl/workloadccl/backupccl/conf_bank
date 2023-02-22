@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# conf_bank defines a backup fixture created using the bank workload. The
+# parameters attempt to create a 400 GB backup fixture to be
+# comparable to the 400GB tpce default fixture.
+
+. ./conf_default
+
+# hardware
+cluster_name=$CLUSTER-bank
+
+# bank init; creates about 375GB of data
+workload="bank"
+workload_var=rows
+workload_val=13000000
+bank_payload_bytes=10240
+bank_run_payload_bytes=256
+bank_run_max_rate=100
+
+

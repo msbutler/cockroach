@@ -1,0 +1,19 @@
+#!/bin/bash
+
+# conf_tpce32tb defines a 32tb backup fixture.
+. ./conf_default
+
+# hardware
+crdb_nodes=15
+cluster_name=$CLUSTER-32tb
+
+#48 cores, 192 GB of ram
+machine_type=m5.12xlarge
+vol_size=5000
+cloud=aws
+
+# tpce init
+workload_val=2000000
+
+# tpce run (configure to run  longer as full backup will take a couple # hours)
+duration=72h

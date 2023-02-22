@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# conf_tpce8tb creates an 8TB TPCE backup fixture.
+
+. ./conf_default
+
+# hardware
+crdb_nodes=15
+cluster_name=$CLUSTER-8tb
+machine_type=m5.4xlarge
+vol_size=3000
+cloud=aws
+
+# tpce init
+workload_val=500000
+
+# tpce run (configure to run  longer as full backup will take a couple # hours)
+duration=48h
+
+

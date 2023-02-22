@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# conf_tpce80gb defines a 80gb backup fixture.
+. ./conf_default
+
+# hardware
+cluster_name=$CLUSTER-80gb
+vol_size=100
+
+# tpce init; creates about 80GB of data
+workload_val=5000
+

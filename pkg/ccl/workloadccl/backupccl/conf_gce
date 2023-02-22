@@ -1,0 +1,11 @@
+#!/bin/bash
+
+#conf_gce mimics conf_default, but creates the fixture on gcs instead of s3.
+
+. ./conf_default
+
+# hardware
+cluster_name=$CLUSTER-gce-default
+cloud=gce
+machine_type=n2-standard-8
+
