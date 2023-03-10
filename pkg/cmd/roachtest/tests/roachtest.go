@@ -56,4 +56,14 @@ func registerRoachtest(r registry.Registry) {
 		Timeout: 3 * time.Minute,
 		Cluster: r.MakeClusterSpec(3),
 	})
+	r.Add(registry.TestSpec{
+		Name:    "roachtest/Fatal",
+		Owner:   registry.OwnerDisasterRecovery,
+		Cluster: r.MakeClusterSpec(1),
+		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+			c.Put(ctx, t.Cockroach(), "./cockroach")
+			c.Start(ctx, t.L(), option.DefaultStartOptsNoBackups(), install.MakeClusterSettings())
+			t.Fatal("boom")
+		},
+	})
 }
