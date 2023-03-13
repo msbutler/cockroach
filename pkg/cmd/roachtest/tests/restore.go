@@ -339,7 +339,7 @@ func registerRestore(r registry.Registry) {
 	withPauseSpecs := restoreSpecs{
 		hardware: makeHardwareSpecs(hardwareSpecs{}),
 		backup: makeBackupSpecs(
-			backupSpecs{workload: tpceRestore{customers: 5000},
+			backupSpecs{workload: tpceRestore{customers: 1000},
 				version: "v22.2.1"}),
 		timeout:    3 * time.Hour,
 		namePrefix: "pause",
@@ -481,6 +481,8 @@ func registerRestore(r registry.Registry) {
 					}
 				}
 				metricCollector()
+				//fingerprintExp(ctx, t, conn, "trade")
+
 				return nil
 			})
 			m.Wait()
@@ -489,11 +491,13 @@ func registerRestore(r registry.Registry) {
 			// should have succeeded. This final check ensures this test is actually
 			// doing its job: causing the restore job to pause at least once.
 			require.NotEqual(t, 0, pauseIndex, "the job should have paused at least once")
+
 		},
 
 		// TODO(msbutler): to test the correctness of checkpointing, we should
 		// restore the same fixture without pausing it and fingerprint both restored
 		// databases.
+
 	})
 
 	for _, sp := range []restoreSpecs{
@@ -501,6 +505,13 @@ func registerRestore(r registry.Registry) {
 			hardware: makeHardwareSpecs(hardwareSpecs{}),
 			backup:   makeBackupSpecs(backupSpecs{}),
 			timeout:  1 * time.Hour,
+		},
+		{
+			hardware: makeHardwareSpecs(hardwareSpecs{}),
+			backup: makeBackupSpecs(
+				backupSpecs{workload: tpceRestore{customers: 1000},
+					version: "v22.2.1"}),
+			timeout: 3 * time.Hour,
 		},
 		{
 			// Note that the default specs in makeHardwareSpecs() spin up restore tests in aws,
@@ -592,12 +603,38 @@ func registerRestore(r registry.Registry) {
 						return err
 					}
 					metricCollector()
+					conn, err := c.ConnE(ctx, t.L(), c.Node(1)[0])
+					require.NoError(t, err)
+					fingerprintExp(ctx, t, conn, "trade")
+
 					return nil
 				})
 				m.Wait()
 			},
 		})
 	}
+}
+
+func fingerprintExp(ctx context.Context, t test.Test, conn *gosql.DB, tableName string) {
+	oldNow := timeutil.Now()
+	printReg, err := fingerprint(ctx, conn, "tpce", tableName)
+	require.NoError(t, err)
+	fmt.Printf("old method took %.2f minutes", timeutil.Since(oldNow).Minutes())
+	fmt.Printf("print reg: %s\n", printReg)
+
+	newNow := timeutil.Now()
+	skipTSfingerprintQuery := fmt.Sprintf(`
+SELECT *
+FROM
+	crdb_internal.fingerprint(
+		crdb_internal.table_span((SELECT id FROM system.namespace WHERE name = '%s' AND "parentID" != 0)),
+		true
+	)`, tableName)
+	var newFingerprint int
+	require.NoError(t, conn.QueryRow(skipTSfingerprintQuery).Scan(&newFingerprint))
+	fmt.Printf("new method took %.2f minutes", timeutil.Since(newNow).Minutes())
+	fmt.Printf("print reg: %d\n", newFingerprint)
+
 }
 
 var defaultHardware = hardwareSpecs{
@@ -776,6 +813,8 @@ func (tpce tpceRestore) String() string {
 	var builder strings.Builder
 	builder.WriteString("tpce/")
 	switch tpce.customers {
+	case 1000:
+		builder.WriteString("15GB")
 	case 5000:
 		builder.WriteString("80GB")
 	case 25000:
