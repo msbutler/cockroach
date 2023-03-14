@@ -328,6 +328,9 @@ type replicationTestSpec struct {
 	// timeout specifies when the roachtest should fail due to timeout.
 	timeout time.Duration
 
+	// If non-empty, the test will be skipped with the supplied reason.
+	skip string
+
 	// fields below are instantiated at runtime
 	setup   *c2cSetup
 	t       test.Test
@@ -496,9 +499,7 @@ func (sp *replicationTestSpec) getReplicationRetainedTime() time.Time {
 }
 
 func (sp *replicationTestSpec) stopReplicationStream(ingestionJob int, cutoverTime time.Time) {
-	sp.setup.dst.sysSQL.Exec(sp.t, `SELECT crdb_internal.complete_stream_ingestion_job($1, $2)`,
-		ingestionJob,
-		cutoverTime)
+	sp.setup.dst.sysSQL.Exec(sp.t, `ALTER TENANT $1 COMPLETE REPLICATION TO SYSTEM TIME $2::string`, sp.setup.dst.name, cutoverTime)
 	err := retry.ForDuration(time.Minute*5, func() error {
 		var status string
 		var payloadBytes []byte
@@ -612,6 +613,7 @@ func registerClusterToCluster(r registry.Registry) {
 			timeout:            20 * time.Minute,
 			additionalDuration: 0 * time.Minute,
 			cutover:            30 * time.Second,
+			skip:               "for local ad hoc testing",
 		},
 		{
 			name:               "c2c/BulkOps",
@@ -637,6 +639,7 @@ func registerClusterToCluster(r registry.Registry) {
 			Owner:           registry.OwnerDisasterRecovery,
 			Cluster:         r.MakeClusterSpec(sp.dstNodes+sp.srcNodes+1, clusterOps...),
 			Timeout:         sp.timeout,
+			Skip:            sp.skip,
 			RequiresLicense: true,
 			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
 				sp.setupC2C(ctx, t, c)
