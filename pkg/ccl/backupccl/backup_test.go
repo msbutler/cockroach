@@ -1001,6 +1001,8 @@ func backupAndRestore(
 
 		sqlDB.Exec(t, incBackupQuery, queryArgs...)
 	}
+	bankTableID := sqlutils.QueryTableID(t, conn, "data", "public", "bank")
+	backupTableFingerprint := sqlutils.FingerprintTable(t, sqlDB, bankTableID)
 
 	sqlDB.Exec(t, `DROP DATABASE data CASCADE`)
 
@@ -1021,7 +1023,7 @@ func backupAndRestore(
 		restoreQuery = fmt.Sprintf("%s WITH kms = %s", restoreQuery, kmsURIFmtString)
 	}
 	queryArgs := append(restoreURIArgs, kmsURIArgs...)
-	verifyRestoreData(t, sqlDB, storageSQLDB, restoreQuery, queryArgs, numAccounts)
+	verifyRestoreData(t, sqlDB, storageSQLDB, restoreQuery, queryArgs, numAccounts, backupTableFingerprint)
 }
 
 func verifyRestoreData(
@@ -1031,6 +1033,7 @@ func verifyRestoreData(
 	restoreQuery string,
 	restoreURIArgs []interface{},
 	numAccounts int,
+	bankStrippedFingerprint int,
 ) {
 	var unused string
 	var restored struct {
@@ -1081,6 +1084,42 @@ func verifyRestoreData(
 			t.Fatal("unexpected span start at primary index")
 		}
 	}
+	restorebankID := sqlutils.QueryTableID(t, sqlDB.DB, "data", "public", "bank")
+	require.Equal(t, bankStrippedFingerprint, sqlutils.FingerprintTable(t, sqlDB, restorebankID))
+}
+
+func TestBackupRestoreFingerprintStripped(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	defer s.Stopper().Stop(ctx)
+	db := sqlutils.MakeSQLRunner(sqlDB)
+	db.Exec(t, "CREATE DATABASE IF NOT EXISTS test")
+	db.Exec(t, "CREATE TABLE test.test (k PRIMARY KEY) AS SELECT generate_series(1, 10)")
+	db.Exec(t, `BACKUP DATABASE test INTO "userfile:///foo"`)
+	backupTableID := sqlutils.QueryTableID(t, sqlDB, "test", "public", "test")
+
+	strippedFingerprint := func(tableID int) int {
+		skipTSfingerprintQuery := fmt.Sprintf(`
+SELECT *
+FROM
+	crdb_internal.fingerprint(
+		crdb_internal.table_span(%d),
+		true
+	)`, tableID)
+
+		var fingerprint int
+		require.NoError(t, sqlDB.QueryRow(skipTSfingerprintQuery).Scan(&fingerprint))
+		return fingerprint
+	}
+	fp1 := strippedFingerprint(int(backupTableID))
+
+	db.Exec(t, `RESTORE DATABASE test FROM LATEST IN "userfile:///foo" WITH new_db_name = "test2"`)
+	restoreTableID := sqlutils.QueryTableID(t, sqlDB, "test2", "public", "test")
+	fp2 := strippedFingerprint(int(restoreTableID))
+	require.Equal(t, fp1, fp2)
 }
 
 func TestBackupRestoreSystemTables(t *testing.T) {
