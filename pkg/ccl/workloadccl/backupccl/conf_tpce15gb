@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# conf_tpce15gb defines a 15gb backup fixture.
+. ./conf_default
+
+# hardware
+cluster_name=$CLUSTER-15gb
+vol_size=100
+
+# tpce init; creates about 15GB of data
+workload_val=1000
+
+inc_crontab="*/5 * * * *"
+
+override_latest=true
+
+# temporary explicit auth while we add new fixtures to s3 from a gce machine
+auth="?AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID&AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY"
