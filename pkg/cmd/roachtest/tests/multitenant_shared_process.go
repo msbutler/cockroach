@@ -73,7 +73,7 @@ func registerMultiTenantSharedProcess(r registry.Registry) {
 			initTime := timeutil.Now()
 			initDU := dt.GetDiskUsage(ctx, crdbNodes)
 			initCmd := fmt.Sprintf(`./workload init tpcc --data-loader import --warehouses %d {pgurl%s:%s}`,
-				tpccWarehouses, crdbNodes, appTenantName)
+				tpccWarehouses, crdbNodes, "system")
 			c.Run(ctx, workloadNode, initCmd)
 			printThroughput(initTime, initDU)
 
@@ -81,7 +81,7 @@ func registerMultiTenantSharedProcess(r registry.Registry) {
 			postInitTime := timeutil.Now()
 			postInitDU := dt.GetDiskUsage(ctx, crdbNodes)
 			runCmd := fmt.Sprintf(`./workload run tpcc --warehouses %d --tolerate-errors --duration 10m {pgurl%s:%s}`,
-				tpccWarehouses, crdbNodes, appTenantName)
+				tpccWarehouses, crdbNodes, "system")
 			c.Run(ctx, workloadNode, runCmd)
 			printThroughput(postInitTime, postInitDU)
 		},
