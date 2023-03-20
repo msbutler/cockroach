@@ -13,6 +13,9 @@ package tests
 import (
 	"context"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/roachtestutil"
+	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
+	"github.com/stretchr/testify/require"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
@@ -54,15 +57,34 @@ func registerMultiTenantSharedProcess(r registry.Registry) {
 
 			createInMemoryTenant(ctx, t, c, appTenantName, crdbNodes, true)
 
+			dt, err := roachtestutil.NewDiskUsageTracker(c, t.L())
+			require.NoError(t, err)
+
+			printThroughput := func(initTime time.Time, initDu int) {
+				postTime := timeutil.Now()
+				postDU := dt.GetDiskUsage(ctx, crdbNodes)
+				t.L().Printf(`init completed in %.2f minutes,and ingested %d mb of data. agg throughput %.2f MB/Min`,
+					postTime.Sub(initTime).Minutes(),
+					postDU-initDu,
+					float64(postDU-initDu)/postTime.Sub(initTime).Minutes())
+			}
+
 			t.Status(`initialize tpcc workload`)
+			initTime := timeutil.Now()
+			initDU := dt.GetDiskUsage(ctx, crdbNodes)
 			initCmd := fmt.Sprintf(`./workload init tpcc --data-loader import --warehouses %d {pgurl%s:%s}`,
 				tpccWarehouses, crdbNodes, appTenantName)
 			c.Run(ctx, workloadNode, initCmd)
+			printThroughput(initTime, initDU)
 
 			t.Status(`run tpcc workload`)
+			postInitTime := timeutil.Now()
+			postInitDU := dt.GetDiskUsage(ctx, crdbNodes)
 			runCmd := fmt.Sprintf(`./workload run tpcc --warehouses %d --tolerate-errors --duration 10m {pgurl%s:%s}`,
 				tpccWarehouses, crdbNodes, appTenantName)
 			c.Run(ctx, workloadNode, runCmd)
+			printThroughput(postInitTime, postInitDU)
 		},
 	})
+
 }
