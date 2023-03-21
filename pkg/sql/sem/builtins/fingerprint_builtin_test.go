@@ -289,8 +289,8 @@ func TestFingerprintStripped(t *testing.T) {
 	db.Exec(t, "CREATE TABLE test.test2 (k PRIMARY KEY) AS SELECT generate_series(1, 10)")
 
 	strippedFingerprint := func(tableName string) int {
-		tableID := sqlutils.QueryTableID(t, sqlDB, "test", "public", tableName)
-		return sqlutils.FingerprintTable(t, db, tableID)
+		//tableID := sqlutils.QueryTableID(t, sqlDB, "test", "public", tableName)
+		return sqlutils.ClunkyFingerprintTable(t, sqlDB, tableName)
 	}
 	require.Equal(t, strippedFingerprint("test"), strippedFingerprint("test2"))
 }

@@ -599,13 +599,14 @@ func registerRestore(r registry.Registry) {
 					defer hc.Done()
 					t.Status(`running restore`)
 					metricCollector := sp.initRestorePerfMetrics(ctx, durationGauge)
+					startTime := timeutil.Now()
 					if err := sp.run(ctx, ""); err != nil {
 						return err
 					}
 					metricCollector()
 					conn, err := c.ConnE(ctx, t.L(), c.Node(1)[0])
 					require.NoError(t, err)
-					fingerprintExp(ctx, t, conn, "trade")
+					fingerprintExp(ctx, t, conn, "trade", startTime)
 
 					return nil
 				})
@@ -615,26 +616,28 @@ func registerRestore(r registry.Registry) {
 	}
 }
 
-func fingerprintExp(ctx context.Context, t test.Test, conn *gosql.DB, tableName string) {
-	oldNow := timeutil.Now()
+func fingerprintExp(ctx context.Context, t test.Test, conn *gosql.DB, tableName string,
+	startTime time.Time) {
+	/*oldNow := timeutil.Now()
 	printReg, err := fingerprint(ctx, conn, "tpce", tableName)
 	require.NoError(t, err)
 	fmt.Printf("old method took %.2f minutes", timeutil.Since(oldNow).Minutes())
-	fmt.Printf("print reg: %s\n", printReg)
+	fmt.Printf("print reg: %s\n", printReg)*/
 
 	newNow := timeutil.Now()
+	microSecondRFC3339Format := "2006-01-02 15:04:05.999999"
+	startTimeStr := startTime.Format(microSecondRFC3339Format)
 	skipTSfingerprintQuery := fmt.Sprintf(`
 SELECT *
 FROM
 	crdb_internal.fingerprint(
-		crdb_internal.table_span((SELECT id FROM system.namespace WHERE name = '%s' AND "parentID" != 0)),
-		true
-	)`, tableName)
+		crdb_internal.table_span((SELECT id FROM system.
+namespace WHERE name = '%s' AND "parentID" != 0)::INT),'%s'::TIMESTAMPTZ, true)`, tableName,
+		startTimeStr)
 	var newFingerprint int
 	require.NoError(t, conn.QueryRow(skipTSfingerprintQuery).Scan(&newFingerprint))
 	fmt.Printf("new method took %.2f minutes", timeutil.Since(newNow).Minutes())
 	fmt.Printf("print reg: %d\n", newFingerprint)
-
 }
 
 var defaultHardware = hardwareSpecs{
