@@ -949,6 +949,35 @@ func TestRestoreEntryCover(t *testing.T) {
 								require.NoError(t, err)
 								require.NoError(t, checkRestoreCovering(ctx, backups, backups[numBackups-1].Spans,
 									cover, target != noSpanTargetSize, execCfg.DistSQLSrv.ExternalStorage))
+
+								// Check that the correct import spans are created if the job is
+								// resumed after some random entry in the cover. The import
+								// spans created from a watermark should just be the full
+								// covering excluding entries below the watermark.
+								if len(cover) > 0 {
+									for n := 0; n < 5; n++ {
+										idx := r.Intn(len(cover))
+										completedSpan := roachpb.Span{
+											Key:    cover[0].Span.Key,
+											EndKey: cover[idx].Span.EndKey}
+										resumeCover, err := makeImportSpans(
+											ctx,
+											backups[numBackups-1].Spans,
+											backups,
+											layerToIterFactory,
+											target<<20,
+											introducedSpanFrontier,
+											[]jobspb.RestoreProgress_FrontierEntry{
+												{
+													Span:      completedSpan,
+													Timestamp: completedSpanTime,
+												},
+											},
+											simpleImportSpans)
+										require.NoError(t, err)
+										require.Equal(t, resumeCover, cover[idx+1:])
+									}
+								}
 							})
 						}
 					}
