@@ -610,7 +610,7 @@ func registerClusterToCluster(r registry.Registry) {
 			cpus:               4,
 			pdSize:             10,
 			workload:           replicateKV{readPercent: 0, debugRunDurationMinutes: 1},
-			timeout:            20 * time.Minute,
+			timeout:            5 * time.Minute,
 			additionalDuration: 0 * time.Minute,
 			cutover:            30 * time.Second,
 			skip:               "for local ad hoc testing",
