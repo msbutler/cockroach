@@ -391,8 +391,11 @@ type hardwareSpecs struct {
 	// cpus is the per node cpu count.
 	cpus int
 
-	// nodes is the number of nodes in the restore.
+	// nodes is the number of crdb nodes in the restore.
 	nodes int
+
+	// addWorkloadNode is true if workload node should also get spun up
+	workloadNode bool
 
 	// volumeSize indicates the size of per node block storage (pd-ssd for gcs,
 	// ebs for aws). If zero, local ssd's are used.
@@ -411,7 +414,11 @@ func (hw hardwareSpecs) makeClusterSpecs(r registry.Registry) spec.ClusterSpec {
 	if hw.mem != spec.Auto {
 		clusterOpts = append(clusterOpts, spec.Mem(hw.mem))
 	}
-	return r.MakeClusterSpec(hw.nodes, clusterOpts...)
+	addWorkloadNode := 0
+	if hw.workloadNode {
+		addWorkloadNode++
+	}
+	return r.MakeClusterSpec(hw.nodes+addWorkloadNode, clusterOpts...)
 }
 
 // String prints the hardware specs. If verbose==true, verbose specs are printed.
@@ -426,6 +433,13 @@ func (hw hardwareSpecs) String(verbose bool) string {
 		builder.WriteString(fmt.Sprintf("/volSize=%dGB", hw.volumeSize))
 	}
 	return builder.String()
+}
+
+func (hw hardwareSpecs) getWorkloadNode() option.NodeListOption {
+	if hw.workloadNode {
+		return option.NodeListOption{hw.nodes + 1}
+	}
+	return option.NodeListOption{}
 }
 
 // makeHardwareSpecs instantiates hardware specs for a restore roachtest.
@@ -444,6 +458,7 @@ func makeHardwareSpecs(override hardwareSpecs) hardwareSpecs {
 	if override.volumeSize != 0 {
 		specs.volumeSize = override.volumeSize
 	}
+	specs.workloadNode = override.workloadNode
 	return specs
 }
 
@@ -476,9 +491,6 @@ type backupSpecs struct {
 
 	// workload defines the backed up workload.
 	workload backupWorkload
-
-	// aost specifies the aost to restore from. Derived at runtime.
-	aost string
 }
 
 // String returns a stringified version of the backup specs. Note that the
@@ -554,10 +566,18 @@ func makeBackupSpecs(override backupSpecs) backupSpecs {
 type backupWorkload interface {
 	fixtureDir() string
 	String() string
+	initCluster(ctx context.Context, t test.Test, c cluster.Cluster, workloadNode option.NodeListOption)
+	foregroundRun(ctx context.Context, t test.Test, c cluster.Cluster, workloadNode option.NodeListOption)
 }
 
 type tpceRestore struct {
 	customers int
+}
+
+func (tpce tpceRestore) initCluster(ctx context.Context, t test.Test, c cluster.Cluster, sp hardwareSpecs) {
+	initCmd := fmt.Sprintf(`sudo docker run cockroachdb/tpc-e:latest --init --customers=%s --racks=%d \$(cat hosts.txt)`,
+		tpce.customers, sp.nodes)
+	c.Run(ctx, sp.getWorkloadNode(), initCmd)
 }
 
 func (tpce tpceRestore) fixtureDir() string {
@@ -582,6 +602,10 @@ func (tpce tpceRestore) String() string {
 	return builder.String()
 }
 
+func (tpceRestore) foregroundRun(ctx context.Context, t test.Test, c cluster.Cluster) {
+
+}
+
 type restoreSpecs struct {
 	hardware hardwareSpecs
 	backup   backupSpecs
@@ -594,6 +618,9 @@ type restoreSpecs struct {
 	t        test.Test
 	c        cluster.Cluster
 	testName string
+
+	// aost specifies the aost to restore from. Derived at runtime.
+	aost string
 }
 
 func (sp *restoreSpecs) initTestName() {
@@ -610,7 +637,7 @@ func (sp *restoreSpecs) computeName(verbose bool) string {
 
 func (sp *restoreSpecs) restoreCmd(target, opts string) string {
 	return fmt.Sprintf(`./cockroach sql --insecure -e "RESTORE %s FROM %s IN %s AS OF SYSTEM TIME '%s' %s"`,
-		target, sp.backup.fullBackupDir, sp.backup.backupCollection(), sp.backup.aost, opts)
+		target, sp.backup.fullBackupDir, sp.backup.backupCollection(), sp.aost, opts)
 }
 
 func (sp *restoreSpecs) getRuntimeSpecs(ctx context.Context, t test.Test, c cluster.Cluster) {
@@ -621,7 +648,7 @@ func (sp *restoreSpecs) getRuntimeSpecs(ctx context.Context, t test.Test, c clus
 	conn := sp.c.Conn(ctx, sp.t.L(), 1)
 	err := conn.QueryRowContext(ctx, sp.backup.getAostCmd()).Scan(&aost)
 	require.NoError(sp.t, err)
-	sp.backup.aost = aost
+	sp.aost = aost
 }
 
 // run executes the restore, where target injects a restore target into the restore command.

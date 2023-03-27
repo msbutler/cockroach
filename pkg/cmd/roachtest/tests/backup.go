@@ -1308,3 +1308,85 @@ func getAWSBackupPath(dest string) (string, error) {
 
 	return fmt.Sprintf("s3://cockroachdb-backup-testing/%s?%s", dest, q.Encode()), nil
 }
+
+type backupFixture struct {
+	hardware hardwareSpecs
+	backup   backupSpecs
+	timeout  time.Duration
+	tags     []string
+
+	testName string
+}
+
+func (bf *backupFixture) initTestName() {
+	bf.testName = bf.computeName(false)
+}
+
+func (bf *backupFixture) computeName(verbose bool) string {
+	return "backup" + bf.backup.String(verbose) + bf.hardware.String(verbose)
+}
+
+func restoreInit(ctx context.Context, t test.Test, c cluster.Cluster) {
+
+}
+
+func registerBackupFixtures(r registry.Registry) {
+	for _, bf := range []backupFixture{
+		{
+			// Default AWS Backup Fixture
+			hardware: makeHardwareSpecs(hardwareSpecs{workloadNode: true}),
+			backup:   makeBackupSpecs(backupSpecs{}),
+			timeout:  5 * time.Hour,
+		},
+		{
+			// Default Fixture, Run on GCE
+			hardware: makeHardwareSpecs(hardwareSpecs{workloadNode: true}),
+			backup:   makeBackupSpecs(backupSpecs{cloud: spec.GCE}),
+			timeout:  5 * time.Hour,
+		},
+		{
+			// 8TB Restore Fixture.
+			hardware: makeHardwareSpecs(hardwareSpecs{nodes: 10, volumeSize: 2000, workloadNode: true}),
+			backup: makeBackupSpecs(backupSpecs{
+				workload: tpceRestore{customers: 500000}}),
+			timeout: 8 * time.Hour,
+			tags:    []string{"weekly", "aws-weekly"},
+		},
+		{
+			// 32TB Backup test.
+			hardware: makeHardwareSpecs(hardwareSpecs{nodes: 15, cpus: 16, volumeSize: 5000, workloadNode: true}),
+			backup: makeBackupSpecs(backupSpecs{
+				workload: tpceRestore{customers: 2000000}}),
+			timeout: 48 * time.Hour,
+			tags:    []string{"weekly", "aws-weekly"},
+		},
+	} {
+		bf := bf
+		bf.initTestName()
+		r.Add(registry.TestSpec{
+			Name:    bf.testName,
+			Owner:   registry.OwnerDisasterRecovery,
+			Cluster: bf.hardware.makeClusterSpecs(r),
+			Timeout: bf.timeout,
+			// These tests measure performance. To ensure consistent perf,
+			// disable metamorphic encryption.
+			EncryptionSupport: registry.EncryptionAlwaysDisabled,
+			Tags:              bf.tags,
+			Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
+
+				t.L().Printf("Full test specs: %s", bf.computeName(true))
+
+				if c.Spec().Cloud != bf.backup.cloud {
+					// For now, only run the test on the cloud provider that also stores the backup.
+					t.Skipf("test configured to run on %s", bf.backup.cloud)
+				}
+				c.Put(ctx, t.Cockroach(), "./cockroach")
+				c.Start(ctx, t.L(), option.DefaultStartOptsNoBackups(), install.MakeClusterSettings())
+				m := c.NewMonitor(ctx)
+
+				bf.backup.workload.initCluster(ctx, t, c)
+
+			},
+		})
+	}
+}
