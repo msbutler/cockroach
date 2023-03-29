@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand"
 	"runtime"
 	"sort"
 	"sync"
@@ -5850,6 +5851,10 @@ func MVCCExportToSST(
 		IntentPolicy:         MVCCIncrementalIterIntentPolicyAggregate,
 	})
 	defer iter.Close()
+
+	if rand.Intn(10) > 5 {
+		time.Sleep(30 * time.Second)
+	}
 
 	paginated := opts.TargetSize > 0
 	hasElasticCPULimiter := elasticCPUHandle != nil
