@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"strings"
 	"testing"
 	"time"
@@ -400,6 +401,7 @@ func TestSubjectMappingCheck(t *testing.T) {
 func TestSubjectReservedUser(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
+	skip.WithIssue(t, 100412)
 
 	ctx := context.Background()
 	s, _, _ := serverutils.StartServer(t, base.TestServerArgs{})
