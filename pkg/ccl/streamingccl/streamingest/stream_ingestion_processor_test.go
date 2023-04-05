@@ -11,6 +11,7 @@ package streamingest
 import (
 	"context"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"math"
 	"net/url"
 	"strconv"
@@ -401,7 +402,12 @@ func assertEqualKVs(
 				string(it.UnsafeKey().Key), partitionTimestamp)
 			require.NoError(t, err)
 		}
-
+		if len(valueTimestampTuples) == 0 {
+			fmt.Printf("Key %s; Ts %s: Is new Key %t; Partition Ts %s\n", it.UnsafeKey().Key,
+				it.UnsafeKey().Timestamp, newKey, partitionTimestamp)
+			sql := sqlutils.MakeSQLRunner(tc.Conns[0])
+			fmt.Printf("%s\n", sql.QueryStr(t, `SELECT id, job_type, created FROM system.jobs`))
+		}
 		require.Greater(t, len(valueTimestampTuples), 0)
 		// Since the iterator goes from latest to older versions, we compare
 		// starting from the end of the slice that is sorted by timestamp.
