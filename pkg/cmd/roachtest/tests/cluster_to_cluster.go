@@ -958,7 +958,7 @@ func registerClusterReplicationResilience(r registry.Registry) {
 			workload:           c2cResilienceKV{gatewayNodeCh: gatewayNodeCh},
 			timeout:            20 * time.Minute,
 			additionalDuration: 5 * time.Minute,
-			cutover:            4 * time.Minute,
+			cutover:            2 * time.Minute,
 			expectedNodeDeaths: 1,
 		}
 
