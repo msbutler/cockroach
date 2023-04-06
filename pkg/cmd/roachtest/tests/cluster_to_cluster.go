@@ -14,6 +14,7 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
+	"math/rand"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -767,7 +768,7 @@ type c2cPhase int
 
 const (
 	phaseInitialScan c2cPhase = iota
-	steadyState
+	phaseSteadyState
 	phaseCutover
 )
 
@@ -775,7 +776,7 @@ func (c c2cPhase) String() string {
 	switch c {
 	case phaseInitialScan:
 		return "Initial Scan"
-	case steadyState:
+	case phaseSteadyState:
 		return "Steady State"
 	case phaseCutover:
 		return "Cutover"
@@ -798,6 +799,18 @@ type replResilienceSpec struct {
 	watcherNode  int
 }
 
+// createRegisteredSpec creates a roachtest spec that can be used to
+// register a c2c shutdown roachtest.
+func (rsp *replResilienceSpec) createRegisteredSpec() *replicationTestSpec {
+	return &replicationTestSpec{
+		name:     rsp.name(),
+		srcNodes: 4,
+		dstNodes: 4,
+		cpus:     8,
+		timeout:  20 * time.Minute,
+	}
+}
+
 func (rsp *replResilienceSpec) name() string {
 	var builder strings.Builder
 	builder.WriteString("c2c/shutdown")
@@ -813,6 +826,34 @@ func (rsp *replResilienceSpec) name() string {
 	}
 	return builder.String()
 }
+
+// setupRuntimeSpecs creates a replicationTestSpec, randomly picks a phase to shut down the c2c
+// job, and adjusts the workload accordingly
+func (rsp *replResilienceSpec) setupRuntimeSpecs() {
+
+	// Create a new replication test spec within the test driver to ensure that multiple calls
+	// to the driver use completely separate different test specs.
+	rsp.spec = rsp.createRegisteredSpec()
+	rsp.spec.expectedNodeDeaths = 1
+	rsp.spec.workload = c2cResilienceKV{gatewayNodeCh: make(chan int)}
+
+	rsp.phase = c2cPhase(rand.Intn(int(phaseCutover) + 1))
+
+	switch rsp.phase {
+	case phaseInitialScan:
+		// Since the shutdown occured during the initial scan, minimize subsequent workload duration
+		rsp.spec.additionalDuration = 2 * time.Minute
+		rsp.spec.cutover = 1 * time.Minute
+	case phaseSteadyState:
+		rsp.spec.additionalDuration = 5 * time.Minute
+		rsp.spec.cutover = 2 * time.Minute
+	case phaseCutover:
+		// Maximize time spent during cutover
+		rsp.spec.additionalDuration = 5 * time.Minute
+		rsp.spec.cutover = 4 * time.Minute
+	}
+}
+
 func (rsp *replResilienceSpec) getJobIDs(ctx context.Context) {
 	setup := rsp.spec.setup
 	jobIDQuery := `SELECT job_id FROM [SHOW JOBS] WHERE job_type = '%s'`
@@ -884,7 +925,7 @@ func (rsp *replResilienceSpec) getPhase() c2cPhase {
 		return phaseInitialScan
 	}
 	if streamIngestProgress.CutoverTime.IsEmpty() {
-		return steadyState
+		return phaseSteadyState
 	}
 	// TODO check that job has not complete
 	return phaseCutover
@@ -898,6 +939,12 @@ func (rsp *replResilienceSpec) waitForTargetPhase() error {
 		case currentPhase < rsp.phase:
 			time.Sleep(5 * time.Second)
 		case currentPhase == rsp.phase:
+			// Every C2C phase should last at least 30 seconds, so introduce a little
+			// bit of random waiting before node shutdown to ensure the shutdown occurs
+			// once we're settled into the target phase.
+			randomSleep := time.Duration(rand.Intn(6))
+			rsp.spec.t.L().Printf("In target phase! Take a %d second power nap", randomSleep)
+			time.Sleep(randomSleep * time.Second)
 			return nil
 		default:
 			return errors.New("c2c job past target phase")
@@ -912,8 +959,7 @@ type c2cResilienceKV struct {
 }
 
 func (rkv c2cResilienceKV) sourceInitCmd(tenantName string, nodes option.NodeListOption) string {
-	// TODO(msbutler): add an initial workload to test initial scan shutdown.
-	return ""
+	return fmt.Sprintf(`./workload run kv --tolerate-errors --init --duration 2m --read-percent 0 {pgurl%s:%s}`, nodes, tenantName)
 }
 
 func (rkv c2cResilienceKV) sourceRunCmd(tenantName string, nodes option.NodeListOption) string {
@@ -942,45 +988,27 @@ func registerClusterReplicationResilience(r registry.Registry) {
 		{
 			onSrc:         true,
 			onCoordinator: true,
-			// TODO(msbutler): instead of hardcoding shutdowns to occcur during the main c2c phase,
-			// randomly select a phase.
-			phase: steadyState,
 		},
 		{
 			onSrc:         true,
 			onCoordinator: false,
-			phase:         steadyState,
 		},
 		{
 			onSrc:         false,
 			onCoordinator: true,
-			phase:         steadyState,
 		},
 		{
 			onSrc:         false,
 			onCoordinator: false,
-			phase:         steadyState,
 		},
 	} {
-		gatewayNodeCh := make(chan int)
 		rsp := rsp
-		rsp.spec = &replicationTestSpec{
-			name:               rsp.name(),
-			srcNodes:           4,
-			dstNodes:           4,
-			cpus:               8,
-			workload:           c2cResilienceKV{gatewayNodeCh: gatewayNodeCh},
-			timeout:            20 * time.Minute,
-			additionalDuration: 5 * time.Minute,
-			cutover:            4 * time.Minute,
-			expectedNodeDeaths: 1,
-		}
-
-		c2cRegisterWrapper(r, *rsp.spec,
+		c2cRegisterWrapper(r, *rsp.createRegisteredSpec(),
 			func(ctx context.Context, t test.Test, c cluster.Cluster) {
+				rsp.setupRuntimeSpecs()
+				rsp.spec.setupC2C(ctx, t, c)
 
-				sp := rsp.spec
-				sp.setupC2C(ctx, t, c)
+				t.L().Printf("Planned node shutdown during %s phase", rsp.phase.String())
 
 				shutdownSetupDone := make(chan struct{})
 				rsp.spec.replicationStartHook = func(ctx context.Context, sp *replicationTestSpec) {
@@ -993,6 +1021,8 @@ func registerClusterReplicationResilience(r registry.Registry) {
 					// from now on.
 					watcherDB := c.Conn(ctx, sp.t.L(), rsp.watcherNode)
 					watcherSQL := sqlutils.MakeSQLRunner(watcherDB)
+
+					gatewayNodeCh := sp.workload.(*c2cResilienceKV).gatewayNodeCh
 					if rsp.onSrc {
 						sp.setup.src.db = watcherDB
 						sp.setup.src.sysSQL = watcherSQL
@@ -1008,10 +1038,10 @@ func registerClusterReplicationResilience(r registry.Registry) {
 						gatewayNodeCh <- 0
 					}
 				}
-				m := sp.newMonitor(ctx)
+				m := rsp.spec.newMonitor(ctx)
 				m.Go(func(ctx context.Context) error {
 					// start the replication job
-					sp.main(ctx, t, c)
+					rsp.spec.main(ctx, t, c)
 					return nil
 				})
 
@@ -1031,6 +1061,8 @@ func registerClusterReplicationResilience(r registry.Registry) {
 				destinationWatcherNode := rsp.watcherNode
 				if rsp.onSrc {
 					destinationWatcherNode = rsp.spec.setup.dst.nodes[0]
+					t.L().Printf(`on source cluster node shutdown, 
+track the consumer job with dest cluster node %d`, destinationWatcherNode)
 				}
 				shutdownCfg := nodeShutdownConfig{
 					shutdownNode:    rsp.shutdownNode,
