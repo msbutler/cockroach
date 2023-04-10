@@ -459,6 +459,7 @@ func (hw hardwareSpecs) makeClusterSpecs(r registry.Registry, backupCloud string
 		// https://github.com/cockroachdb/cockroach/issues/98783.
 		//
 		// TODO(srosenberg): Remove this workaround when 98783 is addressed.
+		fmt.Printf("Cloud Spec: %s", s.Cloud)
 		s.InstanceType = spec.AWSMachineType(s.CPUs, s.Mem)
 		s.InstanceType = strings.Replace(s.InstanceType, "d.", ".", 1)
 	}
