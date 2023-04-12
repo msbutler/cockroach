@@ -1313,6 +1313,13 @@ func (mvb *mixedVersionBackup) planAndRunBackups(
 	tc := h.Context() // test context
 	l.Printf("current context: %#v", tc)
 
+	for _, node := range mvb.roachNodes {
+		conn := h.Connect(node)
+		if _, err := conn.Exec(`SET CLUSTER SETTING admission.elastic_cpu.enabled=false`); err != nil {
+			return err
+		}
+	}
+
 	if len(mvb.tables) == 0 {
 		l.Printf("planning backups for the first time; loading all user tables")
 		if err := mvb.loadTables(ctx, l, rng, h); err != nil {
