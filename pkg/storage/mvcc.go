@@ -6527,6 +6527,7 @@ func mvccExportToWriter(
 				if isNewKey {
 					resumeKey.Timestamp = hlc.Timestamp{}
 				}
+				// in other words, we will break, split at mid key due to the cpu limiter here
 				resumeIsCPUOverLimit = true
 				break
 			}
