@@ -83,11 +83,12 @@ func TestBackupTenantImportingTable(t *testing.T) {
 	if _, err := sqlDB.DB.ExecContext(ctx, "DROP TENANT [10] IMMEDIATE"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sqlDB.DB.ExecContext(ctx, "RESTORE TENANT 10 FROM $1", dst); err != nil {
+	if _, err := sqlDB.DB.ExecContext(ctx, "RESTORE TENANT 10 FROM $1 WITH tenant='20'",
+		dst); err != nil {
 		t.Fatal(err)
 	}
 	_, tSQL = serverutils.StartTenant(t, tc.Server(0), base.TestTenantArgs{
-		TenantID:     roachpb.MustMakeTenantID(10),
+		TenantID:     roachpb.MustMakeTenantID(20),
 		TestingKnobs: base.TestingKnobs{JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals()},
 	})
 	defer tSQL.Close()
