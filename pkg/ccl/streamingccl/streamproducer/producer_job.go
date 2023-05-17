@@ -102,10 +102,8 @@ func (p *producerJobResumer) Resume(ctx context.Context, execCtx interface{}) er
 			case jobspb.StreamReplicationProgress_FINISHED_SUCCESSFULLY:
 				return p.releaseProtectedTimestamp(ctx, execCfg)
 			case jobspb.StreamReplicationProgress_FINISHED_UNSUCCESSFULLY:
-				return j.NoTxn().Update(ctx, func(txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
-					ju.UpdateStatus(jobs.StatusCancelRequested)
-					return nil
-				})
+				return errors.CombineErrors(errors.Newf("replication stream %d failed", p.job.ID()),
+					p.releaseProtectedTimestamp(ctx, execCfg))
 			case jobspb.StreamReplicationProgress_NOT_FINISHED:
 				// Check if the job timed out.
 				if prog.GetStreamReplication().Expiration.Before(p.timeSource.Now()) {

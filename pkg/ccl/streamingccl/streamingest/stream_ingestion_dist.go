@@ -48,6 +48,7 @@ func startDistIngestion(
 	} else {
 		heartbeatTimestamp = initialScanTimestamp
 	}
+	log.Infof(ctx, "previous highwater %s")
 
 	log.Infof(ctx, "ingestion job %d resumes stream ingestion from start time %s",
 		ingestionJob.ID(), heartbeatTimestamp)

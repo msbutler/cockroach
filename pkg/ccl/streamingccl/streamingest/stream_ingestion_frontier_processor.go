@@ -368,12 +368,17 @@ func (sf *streamIngestionFrontier) noteResolvedTimestamps(
 		return false, err
 	}
 	for _, resolved := range resolvedSpans.ResolvedSpans {
+		log.VEventf(sf.Ctx(), 1, "Noting resolved span: sp %s, time %s", resolved.Span, resolved.Timestamp)
+		if resolved.Timestamp.IsEmpty() {
+			return frontierChanged, errors.AssertionFailedf(
+				"a resolved span should never have a empty timestamp")
+		}
 		// Inserting a timestamp less than the one the ingestion flow started at could
 		// potentially regress the job progress. This is not expected and thus we
 		// assert to catch such unexpected behavior.
-		if !resolved.Timestamp.IsEmpty() && resolved.Timestamp.Less(sf.highWaterAtStart) {
+		if resolved.Timestamp.Less(sf.persistedHighWater) {
 			return frontierChanged, errors.AssertionFailedf(
-				`got a resolved timestamp %s that is less than the frontier processor start time %s`,
+				`got a resolved timestamp %s that is less than the frontier processor hwm %s`,
 				redact.Safe(resolved.Timestamp), redact.Safe(sf.highWaterAtStart))
 		}
 
@@ -409,6 +414,7 @@ func (sf *streamIngestionFrontier) maybeUpdatePartitionProgress() error {
 	partitionProgress := sf.partitionProgress
 
 	sf.lastPartitionUpdate = timeutil.Now()
+	log.VEventf(ctx, 1, `High Water mark %s before progress update`, highWatermark)
 
 	if err := registry.UpdateJobWithTxn(ctx, jobID, nil, false, func(
 		txn isql.Txn, md jobs.JobMetadata, ju *jobs.JobUpdater,
@@ -463,7 +469,7 @@ func (sf *streamIngestionFrontier) maybeUpdatePartitionProgress() error {
 		return err
 	}
 	sf.metrics.JobProgressUpdates.Inc(1)
-	sf.persistedHighWater = f.Frontier()
+	sf.persistedHighWater = highWatermark
 	sf.metrics.FrontierCheckpointSpanCount.Update(int64(len(frontierResolvedSpans)))
 	if !sf.persistedHighWater.IsEmpty() {
 		// Only update the frontier lag if the high water mark has been updated,

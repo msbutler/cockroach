@@ -60,6 +60,7 @@ func applyCutoverTime(
 			// Update the sentinel being polled by the stream ingestion job to
 			// check if a complete has been signaled.
 			progress.CutoverTime = cutoverTimestamp
+			log.Infof(ctx, `Current High Watermark %s`, md.Progress.GetHighWater())
 			ju.UpdateProgress(md.Progress)
 			return nil
 		}); err != nil {
@@ -158,7 +159,8 @@ func waitUntilProducerActive(
 	}
 	if status.StreamStatus != streampb.StreamReplicationStatus_STREAM_ACTIVE {
 		return jobs.MarkAsPermanentJobError(errors.Errorf("failed to resume ingestion job %d "+
-			"as the producer job is not active and in status %s", ingestionJobID, status.StreamStatus))
+			"as the producer job %d is not active and in status %s", streamID, ingestionJobID,
+			status.StreamStatus))
 	}
 	return nil
 }
@@ -304,7 +306,7 @@ func ingestWithRetries(
 		if jobs.IsPermanentJobError(err) || errors.Is(err, context.Canceled) {
 			break
 		}
-		const msgFmt = "stream ingestion waits for retrying after error: %q"
+		const msgFmt = "stream ingestion waits for retrying after error: %s"
 		log.Warningf(ctx, msgFmt, err)
 		updateRunningStatus(ctx, execCtx, ingestionJob, jobspb.ReplicationError,
 			fmt.Sprintf(msgFmt, err))
@@ -489,6 +491,7 @@ func maybeRevertToCutoverTimestamp(
 
 			cutoverTimestamp = streamIngestionProgress.CutoverTime
 			spanToRevert = streamIngestionDetails.Span
+			log.Infof(ctx, "Progress: hwm %s", md.Progress.GetHighWater())
 			shouldRevertToCutover = cutoverTimeIsEligibleForCutover(ctx, cutoverTimestamp, md.Progress)
 
 			if shouldRevertToCutover {
