@@ -1179,7 +1179,8 @@ func getStreamIngestionJobInfo(db *gosql.DB, jobID int) (jobInfo, error) {
 }
 
 func srcClusterSettings(t test.Test, db *sqlutils.SQLRunner) {
-	db.ExecMultiple(t, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`)
+	db.ExecMultiple(t, `SET CLUSTER SETTING kv.rangefeed.enabled = true;`,
+		`SET CLUSTER SETTING kv.rangefeed.catchup_scan_concurrency = 0;`)
 }
 
 func destClusterSettings(t test.Test, db *sqlutils.SQLRunner) {
