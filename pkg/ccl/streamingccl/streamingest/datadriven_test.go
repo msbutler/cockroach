@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/replicationtestutils"
+	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/replicationutils"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/testutils/datapathutils"
@@ -55,10 +56,13 @@ import (
 // - compare-replication-results: runs the specified SQL query on both the
 // "source" and "destination" tenants and asserts that the results are equal
 //
-// - compare-tenant-fingerprints from=<start-time> to=<end-time> [with_revisions]
+// - compare-tenant-fingerprints from=<start-time> to=<end-time> [with_revisions,table_fingerprints]
 // Runs `crdb_internal.fingerprint` on both the "source" and "destination"
 // tenants with the provided options and asserts that the generated fingerprints
 // are equal.
+//
+//   - the table_fingerprints option conducts another round of fingerprinting over each table in the
+//     clusters. (Primarily used to test fingerprint helper functions).
 //
 // - sleep ms=TIME
 // Sleep for TIME milliseconds.
@@ -108,6 +112,16 @@ func TestDataDriven(t *testing.T) {
 				return ""
 
 			case "create-replication-clusters":
+
+				hey := true
+				if hey {
+					t0 := time.Now()
+					retainedCeil := t0.Truncate(time.Microsecond).Add(time.Microsecond)
+					t0TZ, _ := tree.MakeDTimestampTZ(retainedCeil, time.Nanosecond)
+					t0TZ1, _ := tree.MakeDTimestampTZ(retainedCeil, time.Microsecond)
+					t.Fatalf("nano %s, micro %s", t0TZ, t0TZ1)
+				}
+				
 				args := replicationtestutils.DefaultTenantStreamingClustersArgs
 				var cleanup func()
 				ds.replicationClusters, cleanup = replicationtestutils.CreateTenantStreamingClusters(ctx, t, args)
@@ -126,9 +140,7 @@ func TestDataDriven(t *testing.T) {
 				if ok {
 					replicatedTimeTarget = varValue
 				}
-				timestamp, _, err := tree.ParseDTimestamp(nil, replicatedTimeTarget, time.Microsecond)
-				require.NoError(t, err)
-				ds.replicationClusters.WaitUntilReplicatedTime(hlc.Timestamp{WallTime: timestamp.UnixNano()},
+				ds.replicationClusters.WaitUntilReplicatedTime(stringToHLC(t, replicatedTimeTarget),
 					jobspb.JobID(ds.replicationJobID))
 			case "start-replicated-tenant":
 				cleanupTenant := ds.replicationClusters.CreateDestTenantSQL(ctx)
@@ -213,7 +225,25 @@ func TestDataDriven(t *testing.T) {
 				ds.replicationClusters.DestSysSQL.QueryRow(t, fmt.Sprintf(fingerprintQuery,
 					ds.replicationClusters.Args.DestTenantName, from, allRevisions, to)).Scan(&fingerprintDestTenant)
 				require.NotZero(t, fingerprintDestTenant)
+				if fingerprintSrcTenant != fingerprintDestTenant {
+					require.NoError(t, replicationutils.InvestigateFingerprints(ctx,
+						ds.replicationClusters.SrcTenantConn,
+						ds.replicationClusters.DestTenantConn, stringToHLC(t, from), stringToHLC(t, to)))
+					t.Fatalf("tenant level fingerpint mismatch, but table level fingerprints match")
+				}
 				require.Equal(t, fingerprintSrcTenant, fingerprintDestTenant)
+
+				if d.HasArg("table_fingerprints") {
+					if d.HasArg("table_fingerprints") {
+						startTime := stringToHLC(t, from).GoTime()
+						microSecondRFC3339Format := "2006-01-02 15:04:05.999999"
+						startTimeFmt := startTime.Format(microSecondRFC3339Format)
+						t.Fatalf("Formatted %s; GoTime %s", startTimeFmt, startTime.String())
+					}
+					require.NoError(t, replicationutils.InvestigateFingerprints(ctx,
+						ds.replicationClusters.SrcTenantConn,
+						ds.replicationClusters.DestTenantConn, stringToHLC(t, from), stringToHLC(t, to)))
+				}
 
 			case "sleep":
 				var msStr string
@@ -276,6 +306,12 @@ func TestDataDriven(t *testing.T) {
 			return ""
 		})
 	})
+}
+
+func stringToHLC(t *testing.T, timestamp string) hlc.Timestamp {
+	parsedTimestamp, _, err := tree.ParseDTimestamp(nil, timestamp, time.Microsecond)
+	require.NoError(t, err)
+	return hlc.Timestamp{WallTime: parsedTimestamp.UnixNano()}
 }
 
 type datadrivenTestState struct {
