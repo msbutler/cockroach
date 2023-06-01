@@ -13,6 +13,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -120,6 +121,7 @@ func MakeIngestionSSTWriter(
 	ctx context.Context, cs *cluster.Settings, w objstorage.Writable,
 ) SSTWriter {
 	opts := MakeIngestionWriterOptions(ctx, cs)
+	fmt.Printf("Supports rangekeys?:%t\n", opts.TableFormat >= sstable.TableFormatPebblev2)
 	return SSTWriter{
 		fw:                sstable.NewWriter(w, opts),
 		supportsRangeKeys: opts.TableFormat >= sstable.TableFormatPebblev2,

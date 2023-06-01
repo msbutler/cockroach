@@ -106,14 +106,10 @@ type rangeKeyBatcher struct {
 	db       *kv.DB
 	settings *cluster.Settings
 
-	// Functor that creates a new range key SST writer in case
-	// we need to operate on a new batch. The created SST writer
-	// operates on the rangeKeySSTFile below.
-	// TODO(casper): replace this if SSTBatcher someday has support for
-	// adding MVCCRangeKeyValue
-	rangeKeySSTWriterMaker func() *storage.SSTWriter
+	sstWriter *storage.SSTWriter
+
 	// In-memory SST file for flushing MVCC range keys
-	rangeKeySSTFile *storage.MemObject
+	sstFile *storage.MemObject
 	// curRangeKVBatch is the current batch of range KVs which will
 	// be ingested through 'flush' later.
 	curRangeKVBatch     mvccRangeKeyValues
@@ -134,17 +130,11 @@ func newRangeKeyBatcher(
 	ctx context.Context, cs *cluster.Settings, db *kv.DB, onFlush func(summary kvpb.BulkOpSummary),
 ) *rangeKeyBatcher {
 	batcher := &rangeKeyBatcher{
-		db:              db,
-		settings:        cs,
-		minTimestamp:    hlc.MaxTimestamp,
-		batchSummary:    kvpb.BulkOpSummary{},
-		rangeKeySSTFile: &storage.MemObject{},
-		onFlush:         onFlush,
+		db:       db,
+		settings: cs,
+		onFlush:  onFlush,
 	}
-	batcher.rangeKeySSTWriterMaker = func() *storage.SSTWriter {
-		w := storage.MakeIngestionSSTWriter(ctx, batcher.settings, batcher.rangeKeySSTFile)
-		return &w
-	}
+	batcher.reset(ctx)
 	return batcher
 }
 
@@ -330,11 +320,12 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 		return
 	}
 
-	sip.rangeBatcher = newRangeKeyBatcher(ctx, evalCtx.Settings, db.KV(), func(batchSummary kvpb.BulkOpSummary) {
-		// OnFlush update the ingested logical and SST byte metrics.
-		sip.metrics.IngestedLogicalBytes.Inc(batchSummary.DataSize)
-		sip.metrics.IngestedSSTBytes.Inc(batchSummary.SSTDataSize)
-	})
+	sip.rangeBatcher = newRangeKeyBatcher(ctx, evalCtx.Settings, db.KV(),
+		func(batchSummary kvpb.BulkOpSummary) {
+			// OnFlush update the ingested logical and SST byte metrics.
+			sip.metrics.IngestedLogicalBytes.Inc(batchSummary.DataSize)
+			sip.metrics.IngestedSSTBytes.Inc(batchSummary.SSTDataSize)
+		})
 
 	// Start a poller that checks if the stream ingestion job has been signaled to
 	// cutover.
@@ -457,6 +448,9 @@ func (sip *streamIngestionProcessor) close() {
 	}
 	if sip.batcher != nil {
 		sip.batcher.Close(sip.Ctx())
+	}
+	if sip.rangeBatcher != nil {
+		sip.rangeBatcher.close()
 	}
 	if sip.maxFlushRateTimer != nil {
 		sip.maxFlushRateTimer.Stop()
@@ -834,8 +828,6 @@ func (r *rangeKeyBatcher) flush(ctx context.Context) error {
 
 	log.VInfof(ctx, 2, "flushing %d range keys", len(r.curRangeKVBatch))
 
-	sstWriter := r.rangeKeySSTWriterMaker()
-	defer sstWriter.Close()
 	// Sort current batch as the SST writer requires a sorted order.
 	sort.Slice(r.curRangeKVBatch, func(i, j int) bool {
 		return r.curRangeKVBatch[i].RangeKey.Compare(r.curRangeKVBatch[j].RangeKey) < 0
@@ -843,7 +835,8 @@ func (r *rangeKeyBatcher) flush(ctx context.Context) error {
 
 	start, end := keys.MaxKey, keys.MinKey
 	for _, rangeKeyVal := range r.curRangeKVBatch {
-		if err := sstWriter.PutRawMVCCRangeKey(rangeKeyVal.RangeKey, rangeKeyVal.Value); err != nil {
+		if err := r.sstWriter.PutRawMVCCRangeKey(rangeKeyVal.RangeKey,
+			rangeKeyVal.Value); err != nil {
 			return err
 		}
 
@@ -860,12 +853,12 @@ func (r *rangeKeyBatcher) flush(ctx context.Context) error {
 	}
 
 	// Finish the current batch.
-	if err := sstWriter.Finish(); err != nil {
-		return err
+	if err := r.sstWriter.Finish(); err != nil {
+		return errors.Wrap(err, "finishing constructed rangekey sstable")
 	}
 
 	sstToFlush := &rangeKeySST{
-		data:  r.rangeKeySSTFile.Bytes(),
+		data:  r.sstFile.Bytes(),
 		start: start,
 		end:   end.Next(),
 	}
@@ -1073,13 +1066,17 @@ func splitRangeKeySSTAtKey(
 	return leftRet, rightRet, nil
 }
 
-// Reset all the states inside the batcher and needs to called after flush
-// for further uses.
-func (r *rangeKeyBatcher) reset() {
+// reset clears all state inside the batcher. This needs to be called after a
+// successful flush.
+func (r *rangeKeyBatcher) reset(ctx context.Context) {
 	if len(r.curRangeKVBatch) == 0 {
 		return
 	}
-	r.rangeKeySSTFile.Reset()
+	r.sstWriter.Close()
+	r.sstFile = &storage.MemObject{}
+	w := storage.MakeIngestionSSTWriter(ctx, r.settings, r.sstFile)
+	r.sstWriter = &w
+
 	r.minTimestamp = hlc.MaxTimestamp
 	r.batchSummary.Reset()
 	r.curRangeKVBatchSize = 0
@@ -1143,9 +1140,15 @@ func (sip *streamIngestionProcessor) flush() (*jobspb.ResolvedSpans, error) {
 	sip.lastFlushTime = timeutil.Now()
 	sip.curKVBatch = nil
 	sip.curKVBatchSize = 0
-	sip.rangeBatcher.reset()
+	sip.rangeBatcher.reset(ctx)
 
 	return &flushedCheckpoints, sip.batcher.Reset(ctx)
+}
+
+func (r *rangeKeyBatcher) close() {
+	if r.sstWriter != nil {
+		r.sstWriter.Close()
+	}
 }
 
 // cutoverProvider allows us to override how we decide when the job has reached
