@@ -579,7 +579,7 @@ func assertSSTContents(sst []byte, sstTimestamp hlc.Timestamp, stats *enginepb.M
 					"SST contains invalid range key value for range key %s", rangeKey)
 			}
 			if !value.IsTombstone() {
-				return errors.AssertionFailedf("SST contains non-tombstone range key %s", rangeKey)
+				panic(fmt.Sprintf("SST contains non-tombstone range key %s", rangeKey))
 			}
 			if value.MVCCValueHeader != (enginepb.MVCCValueHeader{}) {
 				return errors.AssertionFailedf("SST contains non-empty MVCC value header for range key %s",
