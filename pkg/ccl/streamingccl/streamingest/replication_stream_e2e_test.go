@@ -11,6 +11,7 @@ package streamingest
 import (
 	"context"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"testing"
 	"time"
 
@@ -669,6 +670,33 @@ func TestTenantStreamingDeleteRange(t *testing.T) {
 	// can work on multiple flushes.
 	checkDelRangeOnTable("t1", true /* embeddedInSST */)
 	checkDelRangeOnTable("t2", false /* embeddedInSST */)
+}
+
+func TestNumInSpans(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	args := replicationtestutils.DefaultTenantStreamingClustersArgs
+
+	c, cleanup := replicationtestutils.CreateTenantStreamingClusters(ctx, t, args)
+	defer cleanup()
+
+	replicationtestutils.CreateScatteredTable(t, c, 1)
+
+	execCfg := c.SrcCluster.Server(0).ExecutorConfig().(sql.ExecutorConfig)
+	jobExecCtx, ctxClose := sql.MakeJobExecContext(ctx, "num-in-spans",
+		username.RootUserName(), &sql.MemoryMetrics{}, &execCfg)
+	defer ctxClose()
+
+	distSql := jobExecCtx.DistSQLPlanner()
+	prefix := keys.MakeTenantPrefix(args.SrcTenantID)
+	tenantSpan := roachpb.Span{Key: prefix, EndKey: prefix.PrefixEnd()}
+
+	nRanges, err := sql.NumRangesInSpans(ctx, execCfg.DB, distSql, roachpb.Spans{tenantSpan})
+	require.NoError(t, err)
+	require.Greater(t, nRanges, 1)
+
 }
 
 func TestTenantStreamingMultipleNodes(t *testing.T) {

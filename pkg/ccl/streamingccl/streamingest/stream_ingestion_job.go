@@ -650,7 +650,7 @@ func newCutoverProgressTracker(
 		originalRangeCount: nRanges,
 
 		getRangeCount: func(ctx context.Context, sps roachpb.Spans) (int, error) {
-			return sql.NumRangesInSpans(ctx, p.ExecCfg().DB, p.DistSQLPlanner(), sg.Slice())
+			return sql.NumRangesInSpans(ctx, p.ExecCfg().DB, p.DistSQLPlanner(), sps)
 		},
 	}
 	if testingKnobs := p.ExecCfg().StreamingTestingKnobs; testingKnobs != nil {

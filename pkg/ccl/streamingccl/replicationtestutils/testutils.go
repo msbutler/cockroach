@@ -396,7 +396,7 @@ func CreateScatteredTable(t *testing.T, c *TenantStreamingClusters, numNodes int
 		numRanges*rowsPerRange)
 	c.SrcTenantSQL.Exec(t, "ALTER TABLE d.scattered SPLIT AT (SELECT * FROM generate_series($1::INT, $2::INT, $3::INT))",
 		rowsPerRange, (numRanges-1)*rowsPerRange, rowsPerRange)
-	c.SrcTenantSQL.Exec(t, "ALTER TABLE d.scattered SCATTER")
+	//c.SrcTenantSQL.Exec(t, "ALTER TABLE d.scattered SCATTER")
 }
 
 var defaultSrcClusterSetting = map[string]string{
