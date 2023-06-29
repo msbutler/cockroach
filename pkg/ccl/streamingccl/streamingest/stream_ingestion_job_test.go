@@ -415,6 +415,7 @@ func TestCutoverFractionProgressed(t *testing.T) {
 	ctx := context.Background()
 
 	progressUpdated := make(chan struct{})
+	progressRead := make(chan struct{})
 	s, sqlDB, _ := serverutils.StartServer(t, base.TestServerArgs{
 		Knobs: base.TestingKnobs{
 			Streaming: &sql.StreamingTestingKnobs{
@@ -422,6 +423,7 @@ func TestCutoverFractionProgressed(t *testing.T) {
 				CutoverProgressShouldUpdate:  func() bool { return true },
 				OnCutoverProgressUpdate: func(_ roachpb.Spans) {
 					progressUpdated <- struct{}{}
+					<-progressRead
 				},
 			},
 		},
@@ -504,13 +506,18 @@ func TestCutoverFractionProgressed(t *testing.T) {
 		for range progressUpdated {
 			sip := loadProgress()
 			curProgress := sip.GetFractionCompleted()
+			progressRead <- struct{}{}
 			progressUpdates++
-			if lastFraction > curProgress {
-				return errors.Newf("unexpected progress fraction: %f > %f", lastFraction, curProgress)
+			fmt.Printf("fraction %f", curProgress)
+			if lastFraction >= curProgress {
+				return errors.Newf("unexpected progress fraction: %f (previous) >= %f (current)",
+					lastFraction,
+					curProgress)
 			}
 			rangesLeft := metrics.ReplicationCutoverProgress.Value()
 			if lastRangesLeft < rangesLeft {
-				return errors.Newf("unexpected range count from metric: %d > %d", rangesLeft, lastRangesLeft)
+				return errors.Newf("unexpected range count from metric: %d (current) > %d (previous)",
+					rangesLeft, lastRangesLeft)
 			}
 			lastRangesLeft = rangesLeft
 			lastFraction = curProgress
