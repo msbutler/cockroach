@@ -37,7 +37,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
-	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/sqlutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/storageutils"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -647,9 +646,6 @@ func sortDelRanges(receivedDelRanges []kvpb.RangeFeedDeleteRange) {
 func TestStreamDeleteRange(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
-
-	skip.WithIssue(t, 93568)
-	skip.UnderStressRace(t, "disabled under stress and race")
 
 	h, cleanup := replicationtestutils.NewReplicationHelper(t, base.TestServerArgs{
 		// Test hangs when run within the default test tenant. Tracked with
