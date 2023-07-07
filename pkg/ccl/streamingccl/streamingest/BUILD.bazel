@@ -7,6 +7,7 @@ go_library(
         "external_connection.go",
         "merged_subscription.go",
         "metrics.go",
+        "span_config_rewriter.go",
         "stream_ingest_manager.go",
         "stream_ingestion_dist.go",
         "stream_ingestion_frontier_processor.go",
@@ -19,6 +20,7 @@ go_library(
     deps = [
         "//pkg/base",
         "//pkg/ccl/backupccl",
+        "//pkg/ccl/changefeedccl/cdcevent",
         "//pkg/ccl/streamingccl",
         "//pkg/ccl/streamingccl/replicationutils",
         "//pkg/ccl/streamingccl/streamclient",
@@ -42,6 +44,7 @@ go_library(
         "//pkg/roachpb",
         "//pkg/settings",
         "//pkg/settings/cluster",
+        "//pkg/spanconfig",
         "//pkg/sql",
         "//pkg/sql/catalog/colinfo",
         "//pkg/sql/execinfra",

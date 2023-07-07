@@ -11,19 +11,30 @@
 package streamproducer
 
 import (
+	"context"
+	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
+	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/spanconfig"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
+	"github.com/cockroachdb/errors"
 )
 
 type batchManager struct {
-	batch streampb.StreamEvent_Batch
-	size  int
+	batch          streampb.StreamEvent_Batch
+	size           int
+	spanCfgDecoder cdcevent.Decoder
+	appTenantID    roachpb.TenantID
 }
 
-func makeBatchManager() batchManager {
+func makeBatchManager(decoder cdcevent.Decoder, appTenantID roachpb.TenantID) batchManager {
 	return batchManager{
-		batch: streampb.StreamEvent_Batch{},
+		batch:          streampb.StreamEvent_Batch{},
+		spanCfgDecoder: decoder,
+		appTenantID:    appTenantID,
 	}
 }
 
@@ -42,6 +53,66 @@ func (bm *batchManager) addSST(sst *kvpb.RangeFeedSSTable) {
 func (bm *batchManager) addKV(kv *roachpb.KeyValue) {
 	bm.batch.KeyValues = append(bm.batch.KeyValues, *kv)
 	bm.size += kv.Size()
+}
+
+func (bm *batchManager) addKVAsSpanConfig(ctx context.Context, kv *roachpb.KeyValue) error {
+	row, err := bm.spanCfgDecoder.DecodeKV(ctx, *kv, cdcevent.CurrentRow, kv.Value.Timestamp, false)
+	if err != nil {
+		return err
+	}
+	// We assume the system.Span_Configurations schema is
+	// CREATE TABLE system.span_configurations (
+	//	start_key    BYTES NOT NULL,
+	//  end_key      BYTES NOT NULL,
+	//	config        BYTES NOT NULL,
+	//	CONSTRAINT "primary" PRIMARY KEY (start_key),
+	//	CONSTRAINT check_bounds CHECK (start_key < end_key),
+	//	FAMILY "primary" (start_key, end_key, config)
+	// )
+	//
+	// God forbid we update the span config system table schema, but in the
+	// unlikely event we do, we will have to version gate this decoding step.
+
+	colsAsBytes := make([]tree.DBytes, 3)
+	err = row.ForEachColumn().Datum(func(d tree.Datum, col cdcevent.ResultColumn) error {
+
+		decoded, ok := tree.AsDBytes(d)
+		if !ok {
+			return errors.Newf("could not decode %s datum as DBytes datum", d)
+		}
+		colsAsBytes = append(colsAsBytes, decoded)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	span := roachpb.Span{
+		Key:    []byte(colsAsBytes[0]),
+		EndKey: []byte(colsAsBytes[1]),
+	}
+	_, tenantID, err := keys.DecodeTenantPrefix(span.Key)
+	if !tenantID.Equal(bm.appTenantID) {
+		// Don't send span config updates for other tenants.
+		return nil
+	}
+
+	var conf roachpb.SpanConfig
+	if err := protoutil.Unmarshal([]byte(colsAsBytes[2]), &conf); err != nil {
+		return err
+	}
+
+	rec, err := spanconfig.MakeRecord(spanconfig.DecodeTarget(span), conf)
+	if err != nil {
+		return err
+	}
+	spanCfg := roachpb.SpanConfigEntry{
+		Target: rec.GetTarget().ToProto(),
+		Config: rec.GetConfig(),
+	}
+
+	bm.batch.SpanConfigs = append(bm.batch.SpanConfigs, spanCfg)
+	bm.size += spanCfg.Size()
+	return nil
 }
 
 func (bm *batchManager) addDelRange(d *kvpb.RangeFeedDeleteRange) {

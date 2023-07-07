@@ -811,3 +811,46 @@ USE d;
 	require.Equal(t, batchHLCTime, receivedKVs[0].Value.Timestamp)
 	require.Equal(t, expectedDelRanges, receivedDelRanges)
 }
+
+func TestStreamSpanConfigs(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	h, cleanup := replicationtestutils.NewReplicationHelper(t, base.TestServerArgs{
+		// Test hangs when run within the default test tenant. Tracked with
+		// #76378.
+		DefaultTestTenant: base.TODOTestTenantDisabled,
+	})
+	defer cleanup()
+
+	// add some span configs
+
+	ctx := context.Background()
+	replicationProducerSpec := h.StartReplicationStream(t, "system", true)
+	streamID := replicationProducerSpec.StreamID
+	initialScanTimestamp := replicationProducerSpec.ReplicationStartTime
+	streamResumeTimestamp := h.SysServer.Clock().Now()
+
+	const streamPartitionQuery = `SELECT * FROM crdb_internal.stream_partition($1, $2)`
+	// Only subscribe to table t1 and t2, not t3.
+	// We start the stream at a resume timestamp to avoid any initial scan.
+	spans := spansForTables(h.SysServer.DB(), keys.SystemSQLCodec,
+		systemschema.SpanConfigurationsTableName.Table())
+	spec := encodeSpecForSpans(t, initialScanTimestamp, streamResumeTimestamp, spans)
+
+	source, feed := startReplication(ctx, t, h, makePartitionStreamDecoder,
+		streamPartitionQuery, streamID, spec)
+	defer feed.Close(ctx)
+	codec := source.mu.codec.(*partitionStreamDecoder)
+	for {
+		source.mu.Lock()
+		require.True(t, source.mu.rows.Next())
+		source.mu.codec.decode()
+		if codec.e.Batch != nil {
+			for _, cfg := range codec.e.Batch.SpanConfigs {
+			}
+		}
+		source.mu.Unlock()
+		}
+	}
+}

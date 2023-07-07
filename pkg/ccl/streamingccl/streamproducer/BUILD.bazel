@@ -3,6 +3,7 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "streamproducer",
     srcs = [
+        "batch_manager.go",
         "event_stream.go",
         "producer_job.go",
         "replication_manager.go",
@@ -11,6 +12,7 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/streamproducer",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/ccl/changefeedccl/cdcevent",
         "//pkg/ccl/streamingccl",
         "//pkg/ccl/streamingccl/replicationutils",
         "//pkg/ccl/utilccl",
