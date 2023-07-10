@@ -338,19 +338,38 @@ func (a candidatesByPriority) Less(i, j int) bool {
 	return a[i].sharedPrefixLength > a[j].sharedPrefixLength
 }
 
+// nodeMatcher matches each source cluster node to a destination cluster node,
+// given list of available nodes in each cluster. The matcher has a primary goal
+// to match src-dst nodes that are "close" to each other, i.e. have common
+// locality tags, and a secondary goal to distribute source node assignments
+// evenly across destination nodes. Here's the algorithm:
+//
+// - For each Src node, find their closest dst nodes and the number of
+// localities that match, the LocalityMatchCount, via the sql.ClosestInstances()
+// function. Example: Consider Src-A [US,East] which has match candidates Dst-A
+// [US,West], Dst-B [US, Central]. In the example, the LocalityMatchCount is 1,
+// as only US matches with the src node's locality.
+//
+// - Prioritize matching src-nodes with a higher locality match count, via the
+// findSourceNodePriority() function.
+//
+// - While we have src nodes left to match, match the highest priority Src node
+// to the Dst node candidate that has the fewest matches already, via the
+// findMatch() function.
+
 type nodeMatcher struct {
 	destMatchCount map[base.SQLInstanceID]int
 	destNodesInfo  []sql.InstanceLocality
 }
 
-func makeNodeMatcher(destNodesInfo []sql.InstanceLocality) nodeMatcher {
-	return nodeMatcher{
+func makeNodeMatcher(destNodesInfo []sql.InstanceLocality) *nodeMatcher {
+	return &nodeMatcher{
 		destMatchCount: make(map[base.SQLInstanceID]int, len(destNodesInfo)),
 		destNodesInfo:  destNodesInfo,
 	}
 }
 
-func (nm nodeMatcher) destNodeIDs() []base.SQLInstanceID {
+func (nm *nodeMatcher) destNodeIDs() []base.SQLInstanceID {
 	allDestNodeIDs := make([]base.SQLInstanceID, 0, len(nm.destNodesInfo))
 	for _, info := range nm.destNodesInfo {
 		allDestNodeIDs = append(allDestNodeIDs, info.GetInstanceID())
@@ -362,7 +381,7 @@ func (nm nodeMatcher) destNodeIDs() []base.SQLInstanceID {
 // returns a list of (source node, dest node match candidates) pairs ordered by
 // matching priority. A source node is earlier (higher priority) in the list if
 // it shares more locality tiers with their destination node match candidates.
-func (nm nodeMatcher) findSourceNodePriority(topology streamclient.Topology) candidatesByPriority {
+func (nm *nodeMatcher) findSourceNodePriority(topology streamclient.Topology) candidatesByPriority {
 
 	allDestNodeIDs := nm.destNodeIDs()
 	candidates := make(candidatesByPriority, 0, len(topology.Partitions))
@@ -385,7 +404,7 @@ func (nm nodeMatcher) findSourceNodePriority(topology streamclient.Topology) can
 }
 
 // findMatch returns the destination node id with the fewest src node matches from the input list.
-func (nm nodeMatcher) findMatch(destIDCandidates []base.SQLInstanceID) base.SQLInstanceID {
+func (nm *nodeMatcher) findMatch(destIDCandidates []base.SQLInstanceID) base.SQLInstanceID {
 	minCount := math.MaxInt
 	currentMatch := base.SQLInstanceID(0)
 
