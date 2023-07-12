@@ -54,6 +54,23 @@ type Event interface {
 	GetResolvedSpans() []jobspb.ResolvedSpan
 }
 
+func MakeEvent[e roachpb.KeyValue | sstableEvent](input e) Event2[e] {
+	return Event2[e]{event: input}
+}
+
+type Event2[e roachpb.KeyValue | sstableEvent] struct {
+	event e
+	t     EventType
+}
+
+func (e Event2[e]) Type() EventType {
+	return e.t
+}
+
+func (e Event2[e]) Get() e {
+	return e.event
+}
+
 // kvEvent is a key value pair that needs to be ingested.
 type kvEvent struct {
 	kv roachpb.KeyValue

@@ -259,6 +259,11 @@ func (r *randomEventGenerator) generateNewEvent() streamingccl.Event {
 			for i := 0; i < size; i++ {
 				keyVals = append(keyVals, makeRandomKey(r.rng, r.config, r.tableDesc))
 			}
+
+			genEvent := streamingccl.MakeEvent(keyVals[0])
+
+			kv := genEvent.Get()
+			
 			event = streamingccl.MakeSSTableEvent(r.sstMaker(keyVals))
 		} else {
 			event = streamingccl.MakeKVEvent(makeRandomKey(r.rng, r.config, r.tableDesc))
