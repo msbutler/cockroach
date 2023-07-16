@@ -20,34 +20,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBatchManager(t *testing.T) {
+func TestBatcher(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	bm := makeBatchManager()
+	b := makeBatcher()
 
 	var runningSize int
 	kv := roachpb.KeyValue{Key: roachpb.Key{'1'}}
 	runningSize += kv.Size()
-	bm.addKV(&kv)
-	require.Equal(t, 1, len(bm.batch.KeyValues))
-	require.Equal(t, runningSize, bm.getSize())
+	b.addKV(&kv)
+	require.Equal(t, 1, len(b.batch.KeyValues))
+	require.Equal(t, runningSize, b.getSize())
 
 	delRange := kvpb.RangeFeedDeleteRange{Span: roachpb.Span{Key: roachpb.KeyMin}, Timestamp: hlc.Timestamp{}}
 	runningSize += delRange.Size()
-	bm.addDelRange(&delRange)
-	require.Equal(t, 1, len(bm.batch.DelRanges))
-	require.Equal(t, runningSize, bm.getSize())
+	b.addDelRange(&delRange)
+	require.Equal(t, 1, len(b.batch.DelRanges))
+	require.Equal(t, runningSize, b.getSize())
 
 	sst := replicationtestutils.SSTMaker(t, []roachpb.KeyValue{kv})
 	runningSize += sst.Size()
-	bm.addSST(&sst)
-	require.Equal(t, 1, len(bm.batch.Ssts))
-	require.Equal(t, runningSize, bm.getSize())
+	b.addSST(&sst)
+	require.Equal(t, 1, len(b.batch.Ssts))
+	require.Equal(t, runningSize, b.getSize())
 
-	bm.reset()
-	require.Equal(t, 0, bm.getSize())
-	require.Equal(t, 0, len(bm.batch.KeyValues))
-	require.Equal(t, 0, len(bm.batch.Ssts))
-	require.Equal(t, 0, len(bm.batch.DelRanges))
+	b.reset()
+	require.Equal(t, 0, b.getSize())
+	require.Equal(t, 0, len(b.batch.KeyValues))
+	require.Equal(t, 0, len(b.batch.Ssts))
+	require.Equal(t, 0, len(b.batch.DelRanges))
 }

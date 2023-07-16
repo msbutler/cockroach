@@ -14,41 +14,41 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 )
 
-type batchManager struct {
+type batcher struct {
 	batch streampb.StreamEvent_Batch
 	size  int
 }
 
-func makeBatchManager() *batchManager {
-	return &batchManager{
+func makeBatcher() *batcher {
+	return &batcher{
 		batch: streampb.StreamEvent_Batch{},
 	}
 }
 
-func (bm *batchManager) reset() {
-	bm.size = 0
-	bm.batch.KeyValues = bm.batch.KeyValues[:0]
-	bm.batch.Ssts = bm.batch.Ssts[:0]
-	bm.batch.DelRanges = bm.batch.DelRanges[:0]
+func (b *batcher) reset() {
+	b.size = 0
+	b.batch.KeyValues = b.batch.KeyValues[:0]
+	b.batch.Ssts = b.batch.Ssts[:0]
+	b.batch.DelRanges = b.batch.DelRanges[:0]
 }
 
-func (bm *batchManager) addSST(sst *kvpb.RangeFeedSSTable) {
-	bm.batch.Ssts = append(bm.batch.Ssts, *sst)
-	bm.size += sst.Size()
+func (b *batcher) addSST(sst *kvpb.RangeFeedSSTable) {
+	b.batch.Ssts = append(b.batch.Ssts, *sst)
+	b.size += sst.Size()
 }
 
-func (bm *batchManager) addKV(kv *roachpb.KeyValue) {
-	bm.batch.KeyValues = append(bm.batch.KeyValues, *kv)
-	bm.size += kv.Size()
+func (b *batcher) addKV(kv *roachpb.KeyValue) {
+	b.batch.KeyValues = append(b.batch.KeyValues, *kv)
+	b.size += kv.Size()
 }
 
-func (bm *batchManager) addDelRange(d *kvpb.RangeFeedDeleteRange) {
+func (b *batcher) addDelRange(d *kvpb.RangeFeedDeleteRange) {
 	// DelRange's span is already trimmed to enclosed within
 	// the subscribed span, just emit it.
-	bm.batch.DelRanges = append(bm.batch.DelRanges, *d)
-	bm.size += d.Size()
+	b.batch.DelRanges = append(b.batch.DelRanges, *d)
+	b.size += d.Size()
 }
 
-func (bm *batchManager) getSize() int {
-	return bm.size
+func (b *batcher) getSize() int {
+	return b.size
 }

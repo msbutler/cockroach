@@ -12,6 +12,7 @@ import (
 	"context"
 	gosql "database/sql"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"net/url"
 	"sort"
 	"testing"

@@ -363,12 +363,12 @@ func (p *checkpointPacer) shouldCheckpoint(
 
 // Add a RangeFeedSSTable into current batch.
 func (s *eventStream) addSST(
-	sst *kvpb.RangeFeedSSTable, registeredSpan roachpb.Span, bm *batchManager,
+	sst *kvpb.RangeFeedSSTable, registeredSpan roachpb.Span, b *batcher,
 ) error {
 	// We send over the whole SSTable if the sst span is within
 	// the registered span boundaries.
 	if registeredSpan.Contains(sst.Span) {
-		bm.addSST(sst)
+		b.addSST(sst)
 		return nil
 	}
 	// If the sst span exceeds boundaries of the watched spans,
@@ -381,14 +381,14 @@ func (s *eventStream) addSST(
 	// key value and each MVCCRangeKey value in the trimmed SSTable.
 	return replicationutils.ScanSST(sst, registeredSpan,
 		func(mvccKV storage.MVCCKeyValue) error {
-			bm.addKV(&roachpb.KeyValue{
+			b.addKV(&roachpb.KeyValue{
 				Key: mvccKV.Key.Key,
 				Value: roachpb.Value{
 					RawBytes:  mvccKV.Value,
 					Timestamp: mvccKV.Key.Timestamp}})
 			return nil
 		}, func(rangeKeyVal storage.MVCCRangeKeyValue) error {
-			bm.addDelRange(&kvpb.RangeFeedDeleteRange{
+			b.addDelRange(&kvpb.RangeFeedDeleteRange{
 				Span: roachpb.Span{
 					Key:    rangeKeyVal.RangeKey.StartKey,
 					EndKey: rangeKeyVal.RangeKey.EndKey,
@@ -403,14 +403,14 @@ func (s *eventStream) addSST(
 // accumulating them in a batch, and sending those events to the ValueGenerator.
 func (s *eventStream) streamLoop(ctx context.Context, frontier *span.Frontier) error {
 	pacer := makeCheckpointPacer(s.spec.Config.MinCheckpointFrequency)
-	bm := makeBatchManager()
+	b := makeBatcher()
 
 	maybeFlushBatch := func(force bool) error {
-		if (force && bm.getSize() > 0) || bm.getSize() > int(s.spec.Config.BatchByteSize) {
+		if (force && b.getSize() > 0) || b.getSize() > int(s.spec.Config.BatchByteSize) {
 			defer func() {
-				bm.reset()
+				b.reset()
 			}()
-			return s.flushEvent(ctx, &streampb.StreamEvent{Batch: &bm.batch})
+			return s.flushEvent(ctx, &streampb.StreamEvent{Batch: &b.batch})
 		}
 		return nil
 	}
@@ -431,7 +431,7 @@ func (s *eventStream) streamLoop(ctx context.Context, frontier *span.Frontier) e
 		case ev := <-s.eventsCh:
 			switch {
 			case ev.Val != nil:
-				bm.addKV(&roachpb.KeyValue{
+				b.addKV(&roachpb.KeyValue{
 					Key:   ev.Val.Key,
 					Value: ev.Val.Value,
 				})
@@ -454,7 +454,7 @@ func (s *eventStream) streamLoop(ctx context.Context, frontier *span.Frontier) e
 					}
 				}
 			case ev.SST != nil:
-				err := s.addSST(ev.SST, ev.RegisteredSpan, bm)
+				err := s.addSST(ev.SST, ev.RegisteredSpan, b)
 				if err != nil {
 					return err
 				}
@@ -462,7 +462,7 @@ func (s *eventStream) streamLoop(ctx context.Context, frontier *span.Frontier) e
 					return err
 				}
 			case ev.DeleteRange != nil:
-				bm.addDelRange(ev.DeleteRange)
+				b.addDelRange(ev.DeleteRange)
 				if err := maybeFlushBatch(flushIfNeeded); err != nil {
 					return err
 				}
