@@ -6949,8 +6949,6 @@ func TestBackupRestoreCreatedAndDroppedTenant(t *testing.T) {
 	t3 := getAOST()
 	systemDB.Exec(t, fmt.Sprintf("BACKUP INTO LATEST IN 'nodelocal://1/clusterwide' AS OF SYSTEM TIME %s with include_all_secondary_tenants;", t3))
 
-	systemDB.Exec(t, "RESTORE TENANT 2 FROM LATEST IN 'nodelocal://1/clusterwide' with tenant_name = 'bar'")
-
 	restoreCmd := func(aost string, name string) string {
 		return fmt.Sprintf("RESTORE TENANT 2 FROM LATEST IN 'nodelocal://1/clusterwide' AS OF SYSTEM TIME %s with tenant_name = '%s'", aost, name)
 	}
