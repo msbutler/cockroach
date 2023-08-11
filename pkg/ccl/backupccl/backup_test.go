@@ -6898,6 +6898,70 @@ func TestBackupRestoreInsideMultiPodTenant(t *testing.T) {
 	})
 }
 
+// TestBackupRestoreCreatedAndDroppedTenant ensures that a restore of a tenant works if a
+// incremental backups captured the creation or deletion of a tenant.
+func TestBackupRestoreCreatedAndDroppedTenant(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	params := base.TestClusterArgs{ServerArgs: base.TestServerArgs{
+		Knobs: base.TestingKnobs{
+			JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+			TenantTestingKnobs: &sql.TenantTestingKnobs{
+				// The tests expect specific tenant IDs to show up.
+				EnableTenantIDReuse: true,
+			},
+		},
+
+		DisableDefaultTestTenant: true},
+	}
+
+	const numAccounts = 1
+	tc, systemDB, _, cleanupFn := backupRestoreTestSetupWithParams(
+		t, singleNode, numAccounts, InitManualReplication, params,
+	)
+	_, _ = tc, systemDB
+	defer cleanupFn()
+
+	// NB: tenant certs for 10, 11, 20 are embedded. See:
+	_ = security.EmbeddedTenantIDs()
+
+	systemDB.Exec(t, "CREATE TENANT foo")
+
+	systemDB.Exec(t, "SET sql_safe_updates =off;")
+
+	getAOST := func() string {
+		var ts string
+		systemDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&ts)
+		return ts
+	}
+	t1 := getAOST()
+
+	systemDB.Exec(t, fmt.Sprintf("BACKUP INTO 'nodelocal://1/clusterwide' AS OF SYSTEM TIME '%s' with include_all_secondary_tenants;", t1))
+
+	systemDB.Exec(t, "CREATE TENANT baz")
+
+	t2 := getAOST()
+	systemDB.Exec(t, fmt.Sprintf("BACKUP INTO LATEST IN 'nodelocal://1/clusterwide' AS OF SYSTEM TIME %s with include_all_secondary_tenants;", t2))
+
+	systemDB.Exec(t, "DROP TENANT baz")
+
+	t3 := getAOST()
+	systemDB.Exec(t, fmt.Sprintf("BACKUP INTO LATEST IN 'nodelocal://1/clusterwide' AS OF SYSTEM TIME %s with include_all_secondary_tenants;", t3))
+
+	systemDB.Exec(t, "RESTORE TENANT 2 FROM LATEST IN 'nodelocal://1/clusterwide' with tenant_name = 'bar'")
+
+	restoreCmd := func(aost string, name string) string {
+		return fmt.Sprintf("RESTORE TENANT 2 FROM LATEST IN 'nodelocal://1/clusterwide' AS OF SYSTEM TIME %s with tenant_name = '%s'", aost, name)
+	}
+
+	systemDB.Exec(t, restoreCmd(t1, "full"))
+
+	systemDB.Exec(t, restoreCmd(t2, "after-create"))
+
+	systemDB.Exec(t, restoreCmd(t3, "after-drop"))
+}
+
 // Ensure that backing up and restoring tenants succeeds.
 func TestBackupRestoreTenant(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -6971,7 +7035,7 @@ func TestBackupRestoreTenant(t *testing.T) {
 	systemDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&ts2)
 
 	// BACKUP tenant 10 at ts1, before they created bar2.
-	systemDB.Exec(t, `BACKUP TENANT 10 TO 'nodelocal://1/t10' AS OF SYSTEM TIME `+ts1)
+	systemDB.Exec(t, `BACKUP TENANT 10 INTO 'nodelocal://1/t10' AS OF SYSTEM TIME `+ts1)
 	// Also create a full cluster backup. It should contain the tenant.
 	systemDB.Exec(t, fmt.Sprintf("BACKUP TO 'nodelocal://1/clusterwide' AS OF SYSTEM TIME %s WITH include_all_virtual_clusters", ts1))
 
