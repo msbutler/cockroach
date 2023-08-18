@@ -69,6 +69,9 @@ message StreamPartitionSpec {
     // Controls batch size in bytes.
     int64 batch_byte_size = 3;
 
+    // Indicates this partition spec is for span config streaming.
+    //
+    // TODO (msbutler): consider creating a new spec for span config streams.
     roachpb.TenantID span_config_for_tenant = 4 [(gogoproto.nullable) = false];
   }
 

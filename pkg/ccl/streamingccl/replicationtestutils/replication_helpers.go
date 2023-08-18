@@ -52,6 +52,12 @@ func KeyMatches(key roachpb.Key) FeedEventPredicate {
 	}
 }
 
+func AnySpanConfigMatches() FeedEventPredicate {
+	return func(msg streamingccl.Event) bool {
+		return msg.Type() == streamingccl.SpanConfigEvent
+	}
+}
+
 func minResolvedTimestamp(resolvedSpans []jobspb.ResolvedSpan) hlc.Timestamp {
 	minTimestamp := hlc.MaxTimestamp
 	for _, rs := range resolvedSpans {
@@ -107,6 +113,16 @@ func MakeReplicationFeed(t *testing.T, f FeedSource) *ReplicationFeed {
 // we want to observe will arrive at some point in the future.
 func (rf *ReplicationFeed) ObserveKey(ctx context.Context, key roachpb.Key) roachpb.KeyValue {
 	rf.consumeUntil(ctx, KeyMatches(key), func(err error) bool {
+		return false
+	})
+	return *rf.msg.GetKV()
+}
+
+// ObserveAnySpanConfigRecord consumes the feed until any key is observed.
+// Note: we don't do any buffering here.  Therefore, it is required that the key
+// we want to observe will arrive at some point in the future.
+func (rf *ReplicationFeed) ObserveAnySpanConfigRecord(ctx context.Context) roachpb.KeyValue {
+	rf.consumeUntil(ctx, AnySpanConfigMatches(), func(err error) bool {
 		return false
 	})
 	return *rf.msg.GetKV()

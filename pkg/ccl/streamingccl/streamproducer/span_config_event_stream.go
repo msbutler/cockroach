@@ -237,7 +237,7 @@ func (s *spanConfigEventStream) streamLoop(ctx context.Context) error {
 			}
 			batcher.addSpanConfigs(bufferedEvents)
 			bufferedEvents = bufferedEvents[:0]
-			if pacer.shouldCheckpoint(update.Timestamp, true) {
+			if pacer.shouldCheckpoint(update.Timestamp, true) && len(batcher.batch.SpanConfigs) > 0 {
 				if err := s.flushEvent(ctx, &streampb.StreamEvent{Batch: &batcher.batch}); err != nil {
 					return err
 				}

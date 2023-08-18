@@ -33,13 +33,9 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/spanconfig"
-	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigkvaccessor"
-	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/desctestutils"
 	"github.com/cockroachdb/cockroach/pkg/sql/distsql"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
-	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/testutils/jobutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
@@ -815,40 +811,12 @@ func TestStreamSpanConfigs(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Use a dummy span config table to avoid dealing with the default span configs set on the tenant.
-	const dummySpanConfigurationsName = "dummy_span_configurations"
-	dummyFQN := tree.NewTableNameWithSchema("d", catconstants.PublicSchemaName, dummySpanConfigurationsName)
-
-	h, cleanup := replicationtestutils.NewReplicationHelper(t, base.TestServerArgs{
-		DefaultTestTenant: base.TestControlsTenantsExplicitly,
-		Knobs: base.TestingKnobs{
-			Streaming: &sql.StreamingTestingKnobs{
-				MockSpanConfigTableName: dummyFQN,
-			},
-		},
-	})
+	h, _, accessor, cleanup := replicationtestutils.CreateReplicationHelperWithDummySpanConfigTable(t)
 	defer cleanup()
 
-	h.SysSQL.Exec(t, `
-CREATE DATABASE d;
-USE d;`)
-	h.SysSQL.Exec(t, fmt.Sprintf("CREATE TABLE %s (LIKE system.span_configurations INCLUDING ALL)", dummyFQN))
-
-	tenantID := roachpb.MustMakeTenantID(uint64(10))
 	tenantName := roachpb.TenantName("app")
-
-	_, tenantCleanup := h.CreateTenant(t, tenantID, tenantName)
+	tenant, tenantCleanup := h.CreateTenant(t, serverutils.TestTenantID(), tenantName)
 	defer tenantCleanup()
-
-	tenantCodec := keys.MakeSQLCodec(tenantID)
-	accessor := spanconfigkvaccessor.New(
-		h.SysServer.DB(),
-		h.SysServer.InternalExecutor().(isql.Executor),
-		h.SysServer.ClusterSettings(),
-		h.SysServer.Clock(),
-		dummyFQN.String(),
-		nil, /* knobs */
-	)
 
 	const streamSpanConfigsQuery = `SELECT * FROM crdb_internal.setup_span_configs_stream($1)`
 	source, feed := startReplication(ctx, t, h, makePartitionStreamDecoder,
@@ -860,7 +828,7 @@ USE d;`)
 	}
 
 	makeTableSpan := func(highTableID uint32) roachpb.Span {
-		syntheticTableSpanPrefix := tenantCodec.TablePrefix(highTableID)
+		syntheticTableSpanPrefix := tenant.Codec.TablePrefix(highTableID)
 		return roachpb.Span{Key: syntheticTableSpanPrefix, EndKey: syntheticTableSpanPrefix.PrefixEnd()}
 	}
 

@@ -9,6 +9,13 @@
 package replicationtestutils
 
 import (
+	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/spanconfig/spanconfigkvaccessor"
+	"github.com/cockroachdb/cockroach/pkg/sql"
+	"github.com/cockroachdb/cockroach/pkg/sql/isql"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -41,4 +48,35 @@ func RecordToEntry(record spanconfig.Record) roachpb.SpanConfigEntry {
 		Target: t,
 		Config: c,
 	}
+}
+
+func CreateReplicationHelperWithDummySpanConfigTable(t *testing.T) (*ReplicationHelper, *tree.TableName, *spanconfigkvaccessor.KVAccessor, func()) {
+	// Use a dummy span config table to avoid dealing with the default span configs set on the tenant.
+	const dummySpanConfigurationsName = "dummy_span_configurations"
+	dummyFQN := tree.NewTableNameWithSchema("d", catconstants.PublicSchemaName, dummySpanConfigurationsName)
+
+	h, cleanup := NewReplicationHelper(t, base.TestServerArgs{
+		DefaultTestTenant: base.TestControlsTenantsExplicitly,
+		Knobs: base.TestingKnobs{
+			Streaming: &sql.StreamingTestingKnobs{
+				MockSpanConfigTableName: dummyFQN,
+			},
+		},
+	})
+
+	h.SysSQL.Exec(t, `
+CREATE DATABASE d;
+USE d;`)
+	h.SysSQL.Exec(t, fmt.Sprintf("CREATE TABLE %s (LIKE system.span_configurations INCLUDING ALL)", dummyFQN))
+
+	accessor := spanconfigkvaccessor.New(
+		h.SysServer.DB(),
+		h.SysServer.InternalExecutor().(isql.Executor),
+		h.SysServer.ClusterSettings(),
+		h.SysServer.Clock(),
+		dummyFQN.String(),
+		nil, /* knobs */
+	)
+
+	return h, dummyFQN, accessor, cleanup
 }

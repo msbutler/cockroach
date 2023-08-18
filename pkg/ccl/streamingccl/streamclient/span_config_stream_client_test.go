@@ -11,9 +11,6 @@ package streamclient_test
 import (
 	"context"
 	"errors"
-	"testing"
-	"time"
-
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/replicationtestutils"
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/streamclient"
@@ -23,11 +20,12 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/stretchr/testify/require"
+	"testing"
 )
 
 // TestSpanConfigClient ensures the spanConfigClient surfaces errors.
 //
-// TODO(msbutler): add a few more compontents to this test once the span config
+// TODO(msbutler): add a few more components to this test once the span config
 // client api is finalized.
 func TestSpanConfigClient(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -41,7 +39,6 @@ func TestSpanConfigClient(t *testing.T) {
 			},
 		},
 	)
-
 	defer cleanup()
 
 	testTenantName := roachpb.TenantName("test-tenant")
@@ -67,8 +64,20 @@ func TestSpanConfigClient(t *testing.T) {
 
 	require.NoError(t, client.Dial(ctx))
 
+	// Insert a dummy span config record dummyTableSpanPrefix :=
+	// tenant.Codec.TablePrefix(100)
+	/*dummySpan := roachpb.Span{Key: dummyTableSpanPrefix, EndKey: dummyTableSpanPrefix.PrefixEnd()}
+	require.NoError(t, accessor.UpdateSpanConfigRecords(
+		ctx,
+		spanconfig.Targets{},
+		[]spanconfig.Record{replicationtestutils.MakeSpanConfigRecord(t, dummySpan, 1)},
+		hlc.MinTimestamp,
+		hlc.MaxTimestamp,
+	))
+	*/
+
+	rf.ObserveAnySpanConfigRecord(ctx)
 	// Give a second for the subscription to set up.
-	time.Sleep(1 * time.Second)
 
 	// Test if Subscribe can react to cancellation signal.
 	cancelFn()
