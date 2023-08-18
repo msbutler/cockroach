@@ -11,6 +11,7 @@
 package storage
 
 import (
+	"fmt"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/util"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
@@ -156,6 +157,7 @@ func (f *ReadAsOfIterator) advance(seeked bool) {
 				if v, ok := f.iter.RangeKeys().FirstAtOrBelow(f.asOf); ok {
 					f.newestRangeTombstone = v.Timestamp
 				}
+				panic(fmt.Sprintf("has rangekeys %s!!", f.iter.RangeKeys().String()))
 			}
 			if !hasPoint {
 				f.iter.Next()
