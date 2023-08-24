@@ -11,6 +11,7 @@ package backupccl
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"runtime"
 
@@ -180,14 +181,31 @@ func (rd *restoreDataProcessor) Start(ctx context.Context) {
 		return inputReader(ctx, rd.input, entries, rd.metaCh)
 	})
 
+	startKey, err := hex.DecodeString("f6b7899d9087a293")
+	if err != nil {
+		panic("bad decode")
+	}
+	// endKey, err := hex.DecodeString("f6b7899d9087a293")
+	endKey, err := hex.DecodeString("f6b789b28c86fc478d")
+	if err != nil {
+		panic("bad decode end key")
+	}
+	problemSpan := roachpb.Span{
+		Key:    startKey,
+		EndKey: endKey,
+	}
+
 	rd.phaseGroup.GoCtx(func(ctx context.Context) error {
 		defer close(rd.sstCh)
 		for entry := range entries {
+			if !(entry.Span.Key == startKey && entry.Span.EndKey == endKey) {
+				fmt.Printf("%s not in target span (%s)", entry.Span)
+				continue
+			}
 			if err := rd.openSSTs(ctx, entry, rd.sstCh); err != nil {
 				return err
 			}
 		}
-
 		return nil
 	})
 
