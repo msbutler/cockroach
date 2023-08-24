@@ -324,6 +324,7 @@ func (rd *restoreDataProcessor) openSSTs(
 func (rd *restoreDataProcessor) runRestoreWorkers(
 	ctx context.Context, entries chan execinfrapb.RestoreSpanEntry,
 ) error {
+
 	return ctxgroup.GroupWorkers(ctx, rd.numWorkers, func(ctx context.Context, worker int) error {
 		kr, err := MakeKeyRewriterFromRekeys(rd.FlowCtx.Codec(), rd.spec.TableRekeys, rd.spec.TenantRekeys,
 			false /* restoreTenantFromStream */)
@@ -338,8 +339,14 @@ func (rd *restoreDataProcessor) runRestoreWorkers(
 		for {
 			done, err := func() (done bool, _ error) {
 				entry, ok := <-entries
+
 				if !ok {
 					done = true
+					return done, nil
+				}
+				problemSpanString := "/Table/183/{1/81/9/-2056/3/NULL-2}"
+				if !(entry.Span.String() == problemSpanString) {
+					log.Infof(ctx, "%s not in target span (%s)", entry.Span, problemSpanString)
 					return done, nil
 				}
 
