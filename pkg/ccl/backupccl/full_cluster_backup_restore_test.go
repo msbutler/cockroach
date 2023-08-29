@@ -388,13 +388,20 @@ func TestSingletonSpanConfigJobPostRestore(t *testing.T) {
 	defer cleanupFn()
 	defer cleanupEmptyCluster()
 
+	const getReconciliationJobId = `
+SELECT job_id FROM [SHOW AUTOMATIC JOBS]
+WHERE job_type = 'AUTO SPAN CONFIG RECONCILIATION' AND status = 'running'
+`
+
 	sqlDB.Exec(t, `BACKUP TO $1`, localFoo)
+	backupReconciliationJobID := sqlDB.QueryStr(t, getReconciliationJobId)
 	sqlDBRestore.Exec(t, `RESTORE FROM $1`, localFoo)
 
 	const numRunningReconciliationJobQuery = `
 SELECT count(*) FROM [SHOW AUTOMATIC JOBS]
 WHERE job_type = 'AUTO SPAN CONFIG RECONCILIATION' AND status = 'running'
 `
+
 	testutils.SucceedsSoon(t, func() error {
 		var numRunningJobs int
 		sqlDBRestore.QueryRow(t, numRunningReconciliationJobQuery).Scan(&numRunningJobs)
@@ -403,6 +410,8 @@ WHERE job_type = 'AUTO SPAN CONFIG RECONCILIATION' AND status = 'running'
 		}
 		return nil
 	})
+	restoreReconciliationJobId := sqlDBRestore.QueryStr(t, getReconciliationJobId)
+	require.NotEqual(t, backupReconciliationJobID, restoreReconciliationJobId)
 }
 
 func TestIncrementalFullClusterBackup(t *testing.T) {

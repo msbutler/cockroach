@@ -6891,6 +6891,11 @@ func TestBackupRestoreTenant(t *testing.T) {
 	systemDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&ts1)
 	tenant10.Exec(t, `UPDATE foo.bar SET i = i + 10000`)
 	tenant10.Exec(t, `CREATE TABLE foo.bar2(i int primary key); INSERT INTO foo.bar2 VALUES (1010), (2010)`)
+	const getReconciliationJobId = `
+SELECT job_id FROM [SHOW AUTOMATIC JOBS]
+WHERE job_type = 'AUTO SPAN CONFIG RECONCILIATION' AND status = 'running'
+`
+	backupReconciliationJobID := tenant10.QueryStr(t, getReconciliationJobId)
 	systemDB.QueryRow(t, `SELECT cluster_logical_timestamp()`).Scan(&ts2)
 
 	// BACKUP tenant 10 at ts1, before they created bar2.
@@ -6971,6 +6976,20 @@ func TestBackupRestoreTenant(t *testing.T) {
 		restoreTenant10 := sqlutils.MakeSQLRunner(restoreConn10)
 		restoreTenant10.CheckQueryResults(t, `select * from foo.bar`, tenant10.QueryStr(t, `select * from foo.bar`))
 		restoreTenant10.CheckQueryResults(t, `select * from foo.bar2`, tenant10.QueryStr(t, `select * from foo.bar2`))
+		const numRunningReconciliationJobQuery = `
+SELECT count(*) FROM [SHOW AUTOMATIC JOBS]
+WHERE job_type = 'AUTO SPAN CONFIG RECONCILIATION' AND status = 'running'
+`
+		testutils.SucceedsSoon(t, func() error {
+			var numRunningJobs int
+			restoreTenant10.QueryRow(t, numRunningReconciliationJobQuery).Scan(&numRunningJobs)
+			if numRunningJobs != 1 {
+				return errors.Newf("expected single running reconciliation job, found %d", numRunningJobs)
+			}
+			return nil
+		})
+		restoreReconciliationJobId := restoreTenant10.QueryStr(t, getReconciliationJobId)
+		require.NotEqual(t, backupReconciliationJobID, restoreReconciliationJobId)
 
 		// Stop the tenant process before destroying the tenant.
 		restoreConn10.Close()
