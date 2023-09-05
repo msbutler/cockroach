@@ -635,6 +635,7 @@ AS OF SYSTEM TIME '%s'`, startTime.AsOfSystemTime(), endTime.AsOfSystemTime())
 	fingerPrintMonitor := rd.newMonitor(ctx)
 	fingerPrintMonitor.Go(func(ctx context.Context) error {
 		rd.setup.src.sysSQL.QueryRow(rd.t, fingerprintQuery, rd.setup.src.ID).Scan(&srcFingerprint)
+		rd.t.L().Printf("finished fingerprinting source tenant")
 		return nil
 	})
 	var destFingerprint int64
@@ -650,15 +651,50 @@ AS OF SYSTEM TIME '%s'`, startTime.AsOfSystemTime(), endTime.AsOfSystemTime())
 	// If the goroutine gets cancelled or fataled, return before comparing fingerprints.
 	require.NoError(rd.t, fingerPrintMonitor.WaitE())
 	if srcFingerprint != destFingerprint {
-		rd.t.L().Printf("fingerpint mismatch: conducting table level fingerprints")
-		srcTenantConn := rd.c.Conn(ctx, rd.t.L(), 1, option.TenantName(rd.setup.src.name))
-		dstTenantConn := rd.c.Conn(ctx, rd.t.L(), rd.rs.srcNodes+1, option.TenantName(rd.setup.dst.name))
-		require.NoError(rd.t, replicationutils.InvestigateFingerprints(ctx, srcTenantConn, dstTenantConn,
-			startTime,
-			endTime))
-		rd.t.L().Printf("fingerprints by table seem to match")
+		rd.onFingerprintMismatch(ctx, startTime, endTime)
 	}
 	require.Equal(rd.t, srcFingerprint, destFingerprint)
+	rd.onFingerprintMismatch(ctx, startTime, endTime)
+}
+
+func (rd *replicationDriver) onFingerprintMismatch(ctx context.Context, startTime, endTime hlc.Timestamp) {
+	rd.t.L().Printf("fingerpint mismatch: conducting table level fingerprints")
+	srcTenantConn := rd.c.Conn(ctx, rd.t.L(), 1, option.TenantName(rd.setup.src.name))
+	dstTenantConn := rd.c.Conn(ctx, rd.t.L(), rd.rs.srcNodes+1, option.TenantName(rd.setup.dst.name))
+	fingerprintBisectErr := replicationutils.InvestigateFingerprints(ctx, srcTenantConn, dstTenantConn,
+		startTime,
+		endTime)
+	if fingerprintBisectErr != nil {
+		rd.t.L().Printf("Fingerprint bisect error", fingerprintBisectErr)
+	}
+	rd.t.L().Printf("fingerpint mismatch: backing up src and destination tenants")
+	fingerPrintMonitor := rd.newMonitor(ctx)
+	// Before returning the fingerprint bisect error, backup the source and destination tenant.
+	fingerPrintMonitor.Go(func(ctx context.Context) error {
+		return rd.backupAfterFingerprintMismatch(ctx, srcTenantConn, rd.setup.src.name, startTime, endTime)
+	})
+	fingerPrintMonitor.Go(func(ctx context.Context) error {
+		return rd.backupAfterFingerprintMismatch(ctx, dstTenantConn, rd.setup.dst.name, startTime, endTime)
+	})
+	require.NoError(rd.t, fingerPrintMonitor.WaitE())
+	rd.t.L().Printf("fingerprints by table seem to match")
+	require.NoError(rd.t, fingerprintBisectErr)
+}
+
+func (rd *replicationDriver) backupAfterFingerprintMismatch(ctx context.Context, conn *gosql.DB, tenantName string, startTime, endTime hlc.Timestamp) error {
+	gsDir := fmt.Sprintf("gs://%s/c2c-fingerprint-mismatch/%s/%s?AUTH=implicit", testutils.BackupTestingBucket(), rd.c.Name(), tenantName)
+	fullBackupQuery := fmt.Sprintf("BACKUP INTO '%s' AS OF SYSTEM TIME '%s' with revision_history", gsDir, startTime.AsOfSystemTime())
+	_, err := conn.ExecContext(ctx, fullBackupQuery)
+	if err != nil {
+		return errors.Wrapf(err, "Full backup for %s failed", tenantName)
+	}
+	// The incremental backup for each tenant must match.
+	incBackupQuery := fmt.Sprintf("BACKUP INTO LATEST IN '%s' AS OF SYSTEM TIME '%s' with revision_history", gsDir, endTime.AsOfSystemTime())
+	_, err = conn.ExecContext(ctx, incBackupQuery)
+	if err != nil {
+		return errors.Wrapf(err, "Inc backup for %s failed", tenantName)
+	}
+	return nil
 }
 
 // checkParticipatingNodes asserts that multiple nodes in the source and dest cluster are
@@ -788,6 +824,11 @@ func (rd *replicationDriver) main(ctx context.Context) {
 
 	rd.metrics.cutoverTo = newMetricSnapshot(metricSnapper, actualCutoverTime.GoTime())
 	rd.metrics.cutoverEnd = newMetricSnapshot(metricSnapper, timeutil.Now())
+
+	dstTenantConn := startInMemoryTenant(ctx, rd.t, rd.c, rd.setup.dst.name, rd.setup.dst.nodes, true)
+	destTenantSQL := sqlutils.MakeSQLRunner(dstTenantConn)
+	destDatabases := destTenantSQL.QueryStr(rd.t, "SHOW DATABASES")
+	rd.t.L().Printf("Dest Tenant Databases: \n\t %s", destDatabases)
 
 	rd.metrics.export(rd.t, len(rd.setup.src.nodes))
 

@@ -340,12 +340,30 @@ func createInMemoryTenant(
 ) *gosql.DB {
 	sysSQL := sqlutils.MakeSQLRunner(c.Conn(ctx, t.L(), nodes.RandNode()[0]))
 	sysSQL.Exec(t, "CREATE TENANT $1", tenantName)
+
+	tenantConn := startInMemoryTenant(ctx, t, c, tenantName, nodes, secure)
+	tenantSQL := sqlutils.MakeSQLRunner(tenantConn)
+	if secure {
+		createTenantAdminRole(t, tenantName, tenantSQL)
+	}
+	return tenantConn
+}
+
+func startInMemoryTenant(
+	ctx context.Context,
+	t test.Test,
+	c cluster.Cluster,
+	tenantName string,
+	nodes option.NodeListOption,
+	secure bool) *gosql.DB {
+	sysSQL := sqlutils.MakeSQLRunner(c.Conn(ctx, t.L(), nodes.RandNode()[0]))
 	sysSQL.Exec(t, "ALTER TENANT $1 START SERVICE SHARED", tenantName)
 	sysSQL.Exec(t, `ALTER TENANT $1 GRANT CAPABILITY can_view_node_info=true, can_admin_split=true,can_view_tsdb_metrics=true`, tenantName)
 	sysSQL.Exec(t, `ALTER TENANT $1 SET CLUSTER SETTING sql.split_at.allow_for_secondary_tenant.enabled=true`, tenantName)
 	sysSQL.Exec(t, `ALTER TENANT $1 SET CLUSTER SETTING sql.scatter.allow_for_secondary_tenant.enabled=true`, tenantName)
 	sysSQL.Exec(t, `ALTER TENANT $1 SET CLUSTER SETTING sql.zone_configs.allow_for_secondary_tenant.enabled=true`, tenantName)
-
+	sysSQL.Exec(t, `ALTER TENANT $1 SET CLUSTER SETTING enterprise.license = $2`, tenantName, config.CockroachDevLicense)
+	sysSQL.Exec(t, `ALTER TENANT $1 SET CLUSTER SETTING cluster.organization = 'Cockroach Labs - Production Testing'`, tenantName)
 	removeTenantRateLimiters(t, sysSQL, tenantName)
 
 	// Opening a SQL session to a newly created in-process tenant may require a
@@ -354,7 +372,6 @@ func createInMemoryTenant(
 	// first query. Therefore, wrap connection opening and a ping to the tenant
 	// server in a retry loop.
 	var tenantConn *gosql.DB
-	var tenantSQL *sqlutils.SQLRunner
 	testutils.SucceedsSoon(t, func() error {
 		var err error
 		tenantConn, err = c.ConnE(ctx, t.L(), nodes.RandNode()[0], option.TenantName(tenantName))
@@ -364,13 +381,9 @@ func createInMemoryTenant(
 		if err = tenantConn.Ping(); err != nil {
 			return err
 		}
-		tenantSQL = sqlutils.MakeSQLRunner(tenantConn)
 		return nil
 	})
 
-	if secure {
-		createTenantAdminRole(t, tenantName, tenantSQL)
-	}
 	return tenantConn
 }
 
