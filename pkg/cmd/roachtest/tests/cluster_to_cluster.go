@@ -326,6 +326,10 @@ type replicationSpec struct {
 	// maxLatency override the maxAcceptedLatencyDefault.
 	maxAcceptedLatency time.Duration
 
+	// sometimesTestFingerprintMismatchCode will occasionally test the codepath
+	// the roachtest takes if it detects a fingerprint mismatch.
+	sometimesTestFingerprintMismatchCode bool
+
 	// If non-empty, the test will be skipped with the supplied reason.
 	skip string
 }
@@ -351,7 +355,7 @@ type replicationDriver struct {
 }
 
 func makeReplicationDriver(t test.Test, c cluster.Cluster, rs replicationSpec) *replicationDriver {
-	rng, seed := randutil.NewTestRand()
+	rng, seed := randutil.NewPseudoRand()
 	t.L().Printf(`Random Seed is %d`, seed)
 	return &replicationDriver{
 		t:   t,
@@ -596,6 +600,7 @@ AS OF SYSTEM TIME '%s'`, startTimeDecimal, aost)
 	fingerPrintMonitor := rd.newMonitor(ctx)
 	fingerPrintMonitor.Go(func(ctx context.Context) error {
 		rd.setup.src.sysSQL.QueryRow(rd.t, fingerprintQuery, rd.setup.src.ID).Scan(&srcFingerprint)
+		rd.t.L().Printf("finished fingerprinting source tenant")
 		return nil
 	})
 	var destFingerprint int64
@@ -613,15 +618,67 @@ AS OF SYSTEM TIME '%s'`, startTimeDecimal, aost)
 	if srcFingerprint != destFingerprint {
 		startHlc := hlc.Timestamp{WallTime: startTime.UnixNano()}
 		endHlc := hlc.Timestamp{WallTime: endTime.UnixNano()}
-		rd.t.L().Printf("fingerpint mismatch: conducting table level fingerprints")
-		srcTenantConn := rd.c.Conn(ctx, rd.t.L(), 1, option.TenantName(rd.setup.src.name))
-		dstTenantConn := rd.c.Conn(ctx, rd.t.L(), rd.rs.srcNodes+1, option.TenantName(rd.setup.dst.name))
-		require.NoError(rd.t, replicationutils.InvestigateFingerprints(ctx, srcTenantConn, dstTenantConn,
-			startHlc,
-			endHlc))
-		rd.t.L().Printf("fingerprints by table seem to match")
+		rd.onFingerprintMismatch(ctx, startHlc, endHlc)
 	}
 	require.Equal(rd.t, srcFingerprint, destFingerprint)
+}
+
+// onFingerprintMismatch runs table level fingerprints and backs up both tenants.
+func (rd *replicationDriver) onFingerprintMismatch(
+	ctx context.Context, startTime, endTime hlc.Timestamp,
+) {
+	rd.t.L().Printf("conducting table level fingerprints")
+	srcTenantConn := rd.c.Conn(ctx, rd.t.L(), 1, option.TenantName(rd.setup.src.name))
+	dstTenantConn := rd.c.Conn(ctx, rd.t.L(), rd.rs.srcNodes+1, option.TenantName(rd.setup.dst.name))
+	fingerprintBisectErr := replicationutils.InvestigateFingerprints(ctx, srcTenantConn, dstTenantConn,
+		startTime,
+		endTime)
+	// Before failing on this error, back up the source and destination tenants.
+	if fingerprintBisectErr != nil {
+		rd.t.L().Printf("fingerprint bisect error", fingerprintBisectErr)
+	} else {
+		rd.t.L().Printf("table level fingerprints seem to match")
+	}
+	rd.t.L().Printf("backing up src and destination tenants")
+	fingerPrintMonitor := rd.newMonitor(ctx)
+
+	fingerPrintMonitor.Go(func(ctx context.Context) error {
+		return rd.backupAfterFingerprintMismatch(ctx, srcTenantConn, rd.setup.src.name, startTime, endTime)
+	})
+	fingerPrintMonitor.Go(func(ctx context.Context) error {
+		return rd.backupAfterFingerprintMismatch(ctx, dstTenantConn, rd.setup.dst.name, startTime, endTime)
+	})
+	fingerprintMonitorError := fingerPrintMonitor.WaitE()
+	require.NoError(rd.t, errors.CombineErrors(fingerprintBisectErr, fingerprintMonitorError))
+}
+
+// backupAfterFingerprintMismatch runs two backups on the provided tenant: a
+// full backup AOST the provided startTime, and an incremental backup AOST the
+// provided endTime. Both backups run with revision history.
+func (rd *replicationDriver) backupAfterFingerprintMismatch(
+	ctx context.Context, conn *gosql.DB, tenantName string, startTime, endTime hlc.Timestamp,
+) error {
+	if rd.c.IsLocal() {
+		rd.t.L().Printf("skip taking backups of tenants on local roachtest run")
+		return nil
+	}
+	prefix := "gs"
+	if rd.c.Spec().Cloud == spec.AWS {
+		prefix = "s3"
+	}
+	collection := fmt.Sprintf("%s://cockroachdb-backup-testing/c2c-fingerprint-mismatch/%s/%s/%s?AUTH=implicit", prefix, rd.rs.name, rd.c.Name(), tenantName)
+	fullBackupQuery := fmt.Sprintf("BACKUP INTO '%s' AS OF SYSTEM TIME '%s' with revision_history", collection, startTime.AsOfSystemTime())
+	_, err := conn.ExecContext(ctx, fullBackupQuery)
+	if err != nil {
+		return errors.Wrapf(err, "full backup for %s failed", tenantName)
+	}
+	// The incremental backup for each tenant must match.
+	incBackupQuery := fmt.Sprintf("BACKUP INTO LATEST IN '%s' AS OF SYSTEM TIME '%s' with revision_history", collection, endTime.AsOfSystemTime())
+	_, err = conn.ExecContext(ctx, incBackupQuery)
+	if err != nil {
+		return errors.Wrapf(err, "inc backup for %s failed", tenantName)
+	}
+	return nil
 }
 
 func (rd *replicationDriver) main(ctx context.Context) {
@@ -715,6 +772,9 @@ func (rd *replicationDriver) main(ctx context.Context) {
 	rd.stopReplicationStream(ctx, ingestionJobID, cutoverTime)
 	rd.metrics.cutoverEnd = newMetricSnapshot(metricSnapper, timeutil.Now())
 
+	rd.t.L().Printf("starting the destination tenant")
+	startInMemoryTenant(ctx, rd.t, rd.c, rd.setup.dst.name, rd.setup.dst.nodes)
+
 	rd.metrics.export(rd.t, len(rd.setup.src.nodes))
 
 	rd.t.Status("comparing fingerprints")
@@ -723,6 +783,12 @@ func (rd *replicationDriver) main(ctx context.Context) {
 		retainedTime,
 		cutoverTime,
 	)
+	if rd.rs.sometimesTestFingerprintMismatchCode && rd.rng.Intn(5) == 0 {
+		rd.t.L().Printf("testing fingerprint mismatch path")
+		startHlc := hlc.Timestamp{WallTime: retainedTime.UnixNano()}
+		endHlc := hlc.Timestamp{WallTime: cutoverTime.UnixNano()}
+		rd.onFingerprintMismatch(ctx, startHlc, endHlc)
+	}
 	lv.assertValid(rd.t)
 }
 
@@ -1103,15 +1169,16 @@ func registerClusterReplicationResilience(r registry.Registry) {
 		rsp := rsp
 
 		rsp.replicationSpec = replicationSpec{
-			name:               rsp.name(),
-			srcNodes:           4,
-			dstNodes:           4,
-			cpus:               8,
-			workload:           replicateKV{readPercent: 0, initRows: 5000000, maxBlockBytes: 1024},
-			timeout:            20 * time.Minute,
-			additionalDuration: 6 * time.Minute,
-			cutover:            3 * time.Minute,
-			expectedNodeDeaths: 1,
+			name:                                 rsp.name(),
+			srcNodes:                             4,
+			dstNodes:                             4,
+			cpus:                                 8,
+			workload:                             replicateKV{readPercent: 0, initRows: 5000000, maxBlockBytes: 1024},
+			timeout:                              20 * time.Minute,
+			additionalDuration:                   6 * time.Minute,
+			cutover:                              3 * time.Minute,
+			expectedNodeDeaths:                   1,
+			sometimesTestFingerprintMismatchCode: true,
 		}
 
 		c2cRegisterWrapper(r, rsp.replicationSpec,
@@ -1242,7 +1309,7 @@ func registerClusterReplicationDisconnect(r registry.Registry) {
 		ingestionProgress := getJobProgress(t, rd.setup.dst.sysSQL, dstJobID).GetStreamIngest()
 
 		srcDestConnections := getSrcDestNodePairs(rd, ingestionProgress)
-		randomNodePair := srcDestConnections[rand.Intn(len(srcDestConnections))]
+		randomNodePair := srcDestConnections[rd.rng.Intn(len(srcDestConnections))]
 		disconnectDuration := sp.additionalDuration
 		rd.t.L().Printf("Disconnecting Src %d, Dest %d for %.2f minutes", randomNodePair[0],
 			randomNodePair[1], disconnectDuration.Minutes())
