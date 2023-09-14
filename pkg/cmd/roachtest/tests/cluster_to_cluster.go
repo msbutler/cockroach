@@ -786,7 +786,7 @@ func (rd *replicationDriver) main(ctx context.Context) {
 		retainedTime,
 		cutoverTime,
 	)
-	if rd.rs.sometimesTestFingerprintMismatchCode && rd.rng.Intn(5) == 0 {
+	if rd.rs.sometimesTestFingerprintMismatchCode {
 		rd.t.L().Printf("testing fingerprint mismatch path")
 		startHlc := hlc.Timestamp{WallTime: retainedTime.UnixNano()}
 		endHlc := hlc.Timestamp{WallTime: cutoverTime.UnixNano()}
