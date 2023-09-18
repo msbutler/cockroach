@@ -487,6 +487,7 @@ var defaultSrcClusterSetting = map[string]string{
 	`jobs.registry.interval.adopt`:      `'1s'`,
 	// Speed up span reconciliation
 	`spanconfig.reconciliation_job.checkpoint_interval`: `'100ms'`,
+	`sql.stats.automatic_collection.enabled`:            `'false'`,
 }
 
 var defaultDestClusterSetting = map[string]string{
