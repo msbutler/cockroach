@@ -1302,16 +1302,15 @@ func TestReproIncorrectJobQuery(t *testing.T) {
 
 	db := c.DestCluster.Conns[watcherNode]
 	group.GoCtx(func(ctx context.Context) error {
+		var scannedJobID int
 		return retry.ForDuration(time.Second*100, func() error {
-			var status string
-			var payloadBytes []byte
-			res := db.QueryRowContext(ctx, `SELECT status, payload FROM crdb_internal.system_jobs WHERE id = $1`, ingestionJobID)
+			res := db.QueryRowContext(ctx, `SELECT job_id FROM system.job_info where job_id=$1 LIMIT 1`, ingestionJobID)
 			if res.Err() != nil {
 				// This query can fail if a node shuts down during the query execution;
 				// therefore, tolerate errors.
 				return res.Err()
 			}
-			if err := res.Scan(&status, &payloadBytes); err != nil && strings.Contains(err.Error(), "sql: no rows in result set") {
+			if err := res.Scan(&scannedJobID); err != nil && strings.Contains(err.Error(), "sql: no rows in result set") {
 				debugCrdbInternalJobs(ctx, t, ingestionJobID, db)
 				t.Fatalf("incorrect results %s", err.Error())
 
@@ -1319,7 +1318,17 @@ func TestReproIncorrectJobQuery(t *testing.T) {
 				return err
 			}
 
-			// in hook, check system.jobs and
+			var status string
+			var payloadBytes []byte
+			res2 := db.QueryRowContext(ctx, `SELECT status, payload FROM system.jobs WHERE id = $1`, ingestionJobID)
+			if res2.Err() != nil {
+				// This query can fail if a node shuts down during the query execution;
+				// therefore, tolerate errors.
+				return res2.Err()
+			}
+			if err := res2.Scan(&status, &payloadBytes); err != nil {
+				return err
+			}
 			if jobs.Status(status) == jobs.StatusFailed {
 				payload := &jobspb.Payload{}
 				if err := protoutil.Unmarshal(payloadBytes, payload); err == nil {
