@@ -1247,3 +1247,58 @@ WHERE
 	sysSQL.QueryRow(t, distinctQuery).Scan(&locality)
 	require.Contains(t, locality, region)
 }
+
+// TestPauseBackupScheduleAfterCutover checks that replicated backup schedules
+// pause during the first execution after cutover.
+func TestPauseBackupScheduleAfterCutover(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	args := replicationtestutils.DefaultTenantStreamingClustersArgs
+	
+	tempDir, dirCleanup := testutils.TempDir(t)
+	defer dirCleanup()
+	args.ExternalIODir = tempDir
+	c, cleanup := replicationtestutils.CreateTenantStreamingClusters(ctx, t, args)
+	defer cleanup()
+
+	producerJobID, replicationJobID := c.StartStreamReplication(ctx)
+	jobutils.WaitForJobToRun(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
+	jobutils.WaitForJobToRun(c.T, c.DestSysSQL, jobspb.JobID(replicationJobID))
+
+	c.SrcTenantSQL.Exec(t, "CREATE SCHEDULE FOR BACKUP INTO 'nodelocal://1/backup' RECURRING '@hourly' FULL BACKUP ALWAYS")
+
+	var scheduleID int
+	c.SrcSysSQL.QueryRow(t, "SELECT id FROM [SHOW SCHEDULES] WHERE label LIKE 'BACKUP%';").Scan(&scheduleID)
+
+	// Pause the replicating schedule to prevent weird test flakes (e.g. the
+	// schedule could resume before the replicated app tenant manually induces a
+	// test run by setting next_run to now().
+	c.SrcTenantSQL.Exec(t, `PAUSE SCHEDULE $1`, scheduleID)
+
+	srcTime := c.SrcCluster.Server(0).Clock().Now()
+	c.WaitUntilReplicatedTime(srcTime, jobspb.JobID(replicationJobID))
+
+	c.Cutover(producerJobID, replicationJobID, time.Time{}, false)
+	destTenantCleanup := c.StartDestTenant(ctx)
+	defer func() {
+		require.NoError(t, destTenantCleanup())
+	}()
+
+	// Induce the replicated schedule to begin on the Destination tenant, and
+	// ensure the schedule pauses.
+	resumeNowQuery := fmt.Sprintf("UPDATE system.scheduled_jobs SET next_run = now() WHERE schedule_id = %d", scheduleID)
+	c.DestTenantSQL.Exec(t, resumeNowQuery)
+
+	isPausedQuery := fmt.Sprintf("SELECT next_run FROM system.scheduled_jobs WHERE schedule_id = %d", scheduleID)
+	c.DestSysSQL.CheckQueryResultsRetry(t, isPausedQuery, [][]string{{""}})
+
+	var previousBackupCount int
+	backupCountQuery := "SELECT count(job_id) FROM [SHOW JOBS] WHERE job_type = 'BACKUP' AND status = 'succeeded'"
+	c.DestTenantSQL.QueryRow(t, backupCountQuery).Scan(&previousBackupCount)
+
+	// Resume it again and ensure a new backup completes
+	c.DestTenantSQL.Exec(t, resumeNowQuery)
+	c.DestTenantSQL.CheckQueryResultsRetry(t, backupCountQuery, [][]string{{fmt.Sprintf("%d", previousBackupCount+1)}})
+}

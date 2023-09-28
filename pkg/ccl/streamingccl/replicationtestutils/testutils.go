@@ -76,6 +76,7 @@ type TenantStreamingClustersArgs struct {
 	MultiTenantSingleClusterTestRegions []string
 
 	NoMetamorphicExternalConnection bool
+	ExternalIODir                   string
 }
 
 var DefaultTenantStreamingClustersArgs = TenantStreamingClustersArgs{
@@ -137,12 +138,16 @@ func (c *TenantStreamingClusters) setupSrcTenant() {
 	c.SrcTenantSQL = sqlutils.MakeSQLRunner(srcTenantConn)
 }
 
-func (c *TenantStreamingClusters) init() {
+func (c *TenantStreamingClusters) init(ctx context.Context) {
 	c.SrcSysSQL.ExecMultiple(c.T, ConfigureClusterSettings(c.Args.SrcClusterSettings)...)
 	c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 SET CLUSTER SETTING sql.virtual_cluster.feature_access.manual_range_split.enabled=true`, c.Args.SrcTenantName)
 	c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 SET CLUSTER SETTING sql.virtual_cluster.feature_access.manual_range_scatter.enabled=true`, c.Args.SrcTenantName)
 	c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 SET CLUSTER SETTING sql.virtual_cluster.feature_access.zone_configs.enabled=true`, c.Args.SrcTenantName)
 	c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 SET CLUSTER SETTING sql.virtual_cluster.feature_access.multiregion.enabled=true`, c.Args.SrcTenantName)
+	c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 GRANT CAPABILITY can_use_nodelocal_storage`, c.Args.SrcTenantName)
+	require.NoError(c.T, c.SrcSysServer.WaitForTenantCapabilities(ctx, c.Args.SrcTenantID, map[tenantcapabilities.ID]string{
+		tenantcapabilities.CanUseNodelocalStorage: "true",
+	}, ""))
 	if c.Args.SrcInitFunc != nil {
 		c.Args.SrcInitFunc(c.T, c.SrcSysSQL, c.SrcTenantSQL)
 	}
@@ -170,7 +175,10 @@ func (c *TenantStreamingClusters) StartDestTenant(ctx context.Context) func() er
 	})
 	// TODO (msbutler): consider granting the new tenant some capabilities.
 	c.DestSysSQL.Exec(c.T, `ALTER TENANT $1 SET CLUSTER SETTING sql.virtual_cluster.feature_access.zone_configs.enabled=true`, c.Args.DestTenantName)
-
+	c.SrcSysSQL.Exec(c.T, `ALTER TENANT $1 GRANT CAPABILITY can_use_nodelocal_storage`, c.Args.SrcTenantName)
+	require.NoError(c.T, c.DestSysServer.WaitForTenantCapabilities(ctx, c.Args.DestTenantID, map[tenantcapabilities.ID]string{
+		tenantcapabilities.CanUseNodelocalStorage: "true",
+	}, ""))
 	return func() error {
 		return destTenantConn.Close()
 	}
@@ -303,6 +311,7 @@ func CreateServerArgs(args TenantStreamingClustersArgs) base.TestServerArgs {
 				EnableTenantIDReuse: true,
 			},
 		},
+		ExternalIODir: args.ExternalIODir,
 	}
 }
 
@@ -364,7 +373,7 @@ func CreateMultiTenantStreamingCluster(
 		Rng:           rng,
 	}
 	tsc.setupSrcTenant()
-	tsc.init()
+	tsc.init(ctx)
 	return tsc, func() {
 		require.NoError(t, tsc.SrcTenantConn.Close())
 		cleanup()
@@ -412,7 +421,7 @@ func CreateTenantStreamingClusters(
 		Rng:           rng,
 	}
 	tsc.setupSrcTenant()
-	tsc.init()
+	tsc.init(ctx)
 
 	return tsc, func() {
 		require.NoError(t, tsc.SrcTenantConn.Close())

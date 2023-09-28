@@ -665,12 +665,17 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 				d.ScanArgs(t, "user", &user)
 			}
 			checkForClusterSetting(t, d.Input, ds.clusters[cluster].NumServers())
-			rows, err := ds.getSQLDB(t, cluster, user).Query(d.Input)
+			db := ds.getSQLDB(t, cluster, user)
+			var output string
+			var err error
+			if d.HasArg("retry") {
+				output, err = ds.queryAsWithRetry(db, d.Input, d.Expected)
+			} else {
+				output, err = ds.query(db, d.Input)
+			}
 			if err != nil {
 				return err.Error()
 			}
-			output, err := sqlutils.RowsToDataDrivenOutput(rows)
-			require.NoError(t, err)
 			if d.HasArg("regex") {
 				var pattern string
 				d.ScanArgs(t, "regex", &pattern)
@@ -897,6 +902,30 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 			return fmt.Sprintf("unknown command: %s", d.Cmd)
 		}
 	})
+}
+
+func (d *datadrivenTestState) queryAsWithRetry(db *gosql.DB, query, expected string) (string, error) {
+	var output string
+	err := testutils.SucceedsSoonError(func() error {
+		var queryErr error
+		output, queryErr = d.query(db, query)
+		if queryErr != nil {
+			return queryErr
+		}
+		if output != expected {
+			return errors.Newf("latest output: %s\n expected: %s", output, expected)
+		}
+		return nil
+	})
+	return output, err
+}
+
+func (d *datadrivenTestState) query(db *gosql.DB, query string) (string, error) {
+	rows, err := db.Query(query)
+	if err != nil {
+		return "", err
+	}
+	return sqlutils.RowsToDataDrivenOutput(rows)
 }
 
 func handleKVRequest(
