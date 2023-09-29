@@ -1,27 +1,27 @@
 # This test ensures that backups schedules pause when the schedule realizes it
 # is being executed on a new cluster.
 
-new-cluster name=s1 allow-implicit-access
+new-cluster name=s1 allow-implicit-access control-tenant
 ----
+
+exec-sql
+CREATE TENANT app
+----
+
 
 # Create test schedules.
 
 exec-sql
-CREATE SCHEDULE datatest FOR BACKUP INTO 'nodelocal://1/example-schedule' RECURRING '@weekly' FULL BACKUP ALWAYS;
+CREATE SCHEDULE datatest FOR BACKUP INTO 'nodelocal://1/example-schedule' RECURRING '@weekly' FULL BACKUP ALWAYS WITH SCHEDULE OPTIONS first_run = 'now';
 ----
 
 let $fullID
 with schedules as (show schedules for backup) select id from schedules where label='datatest';
 ----
 
-query-sql
-with schedules as (show schedules for backup) select command from schedules where label='datatest' order by backup_type asc;
-----
-BACKUP INTO 'nodelocal://1/example-schedule' WITH OPTIONS (detached)
-
 # wait for one scheduled backup to succeed
 query-sql retry
-SELECT count(job_id) FROM [SHOW JOBS] WHERE job_type = 'BACKUP' AND status = 'succeeded'
+SELECT count(*) FROM [SHOW JOBS] WHERE job_type = 'BACKUP' AND status = 'succeeded';
 ----
 1
 
@@ -30,26 +30,32 @@ new-cluster name=s2 share-io-dir=s1 allow-implicit-access
 ----
 
 exec-sql
-RESTORE FROM LATEST IN 'nodelocal://1/cluster_backup/';
+RESTORE FROM LATEST IN 'nodelocal://1/example-schedule';
 ----
 
-// Induce the replicated schedule to begin on the restored cluster, and
-// ensure the schedule pauses.
+# An empty next run indicates the schedule is paused.
+query-sql
+SELECT * FROM system.scheduled_jobs WHERE schedule_id = $fullID
+----
+
+# Induce the replicated schedule to begin on the restored cluster, and
+# ensure the schedule pauses.
 exec-sql
 UPDATE system.scheduled_jobs SET next_run = now() WHERE schedule_id = $fullID
 ----
 
-// A next run of 0 indicates the schedule is paused.
+# An empty next run indicates the schedule is paused.
 query-sql retry
 SELECT next_run FROM system.scheduled_jobs WHERE schedule_id = $fullID
 ----
-0
 
-// Unpause the schedule and force to run immediately. During the last attempt, the
-// schedule's clusterID was updated, so the schedule should not pause again.
+
+# Unpause the schedule and force to run immediately. During the last attempt, the
+# schedule's clusterID was updated, so the schedule should not pause again.
 exec-sql
-----
 UPDATE system.scheduled_jobs SET next_run = now() WHERE schedule_id = $fullID
+----
+
 
 # wait for abo backup schedule to succeed
 query-sql retry

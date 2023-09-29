@@ -86,8 +86,9 @@ var clusterVersionKeys = map[string]clusterversion.Key{
 }
 
 type sqlDBKey struct {
-	name string
-	user string
+	name   string
+	tenant string
+	user   string
 }
 
 type datadrivenTestState struct {
@@ -114,6 +115,27 @@ func newDatadrivenTestState() datadrivenTestState {
 		jobTags:           make(map[string]jobspb.JobID),
 		clusterTimestamps: make(map[string]string),
 		vars:              make(map[string]string),
+	}
+}
+
+func defaultTestingKnobs(cfg clusterCfg) base.TestingKnobs {
+	var transactionRetryFilter func(roachpb.Transaction) bool
+	if cfg.randomTxnRetries {
+		transactionRetryFilter = kvclientutils.RandomTransactionRetryFilter()
+	}
+	jobKnobs := jobs.NewTestingKnobsWithShortIntervals()
+	jobKnobs.SchedulerDaemonInitialScanDelay = func() time.Duration { return time.Second }
+	jobKnobs.SchedulerDaemonScanDelay = func() time.Duration { return time.Second }
+	return base.TestingKnobs{
+		JobsTestingKnobs: jobKnobs,
+		TenantTestingKnobs: &sql.TenantTestingKnobs{
+			// The tests in this package are particular about the tenant IDs
+			// they get in CREATE TENANT.
+			EnableTenantIDReuse: true,
+		},
+		KVClient: &kvcoord.ClientTestingKnobs{
+			TransactionRetryFilter: transactionRetryFilter,
+		},
 	}
 }
 
@@ -152,21 +174,7 @@ func (d *datadrivenTestState) addCluster(t *testing.T, cfg clusterCfg) error {
 	params.ServerArgs.ExternalIODirConfig = cfg.ioConf
 
 	params.ServerArgs.DefaultTestTenant = cfg.defaultTestTenant
-	var transactionRetryFilter func(roachpb.Transaction) bool
-	if cfg.randomTxnRetries {
-		transactionRetryFilter = kvclientutils.RandomTransactionRetryFilter()
-	}
-	params.ServerArgs.Knobs = base.TestingKnobs{
-		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
-		TenantTestingKnobs: &sql.TenantTestingKnobs{
-			// The tests in this package are particular about the tenant IDs
-			// they get in CREATE TENANT.
-			EnableTenantIDReuse: true,
-		},
-		KVClient: &kvcoord.ClientTestingKnobs{
-			TransactionRetryFilter: transactionRetryFilter,
-		},
-	}
+	params.ServerArgs.Knobs = defaultTestingKnobs(cfg)
 
 	settings := cluster.MakeTestingClusterSettings()
 	if cfg.beforeVersion != "" {
@@ -236,12 +244,12 @@ func (d *datadrivenTestState) getIODir(t *testing.T, name string) string {
 	return dir
 }
 
-func (d *datadrivenTestState) getSQLDB(t *testing.T, name string, user string) *gosql.DB {
-	key := sqlDBKey{name, user}
+func (d *datadrivenTestState) getSQLDB(t *testing.T, clusterName string, tenantName string, user string) *gosql.DB {
+	key := sqlDBKey{clusterName, tenantName, user}
 	if db, ok := d.sqlDBs[key]; ok {
 		return db
 	}
-	addr := d.firstNode[name].ApplicationLayer().AdvSQLAddr()
+	addr := d.firstNode[clusterName].ApplicationLayer().AdvSQLAddr()
 	pgURL, cleanup := sqlutils.PGUrl(t, addr, "TestBackupRestoreDataDriven", url.User(user))
 	d.cleanupFns = append(d.cleanupFns, cleanup)
 
@@ -296,8 +304,11 @@ func (d *datadrivenTestState) getSQLDB(t *testing.T, name string, user string) *
 //
 //   - testingKnobCfg: specifies a key to a hardcoded testingKnob configuration
 //
-//   - disable-tenant : ensures the test is never run in a multitenant environment by
-//     setting testserverargs.DefaultTestTenant to base.TODOTestTenantDisabled.
+//   - control-tenant : ensures the test does not probabilistically run within an application tenant
+//
+//   - create-tenant : creates an application tenant
+//
+//   - switch-default-tenant: switches the default tenant used
 //
 //   - "upgrade-cluster version=<version>"
 //     Upgrade the cluster version of the active cluster to the passed in
@@ -431,12 +442,13 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 	}
 
 	var lastCreatedCluster string
+	var defaultTenant string
 	ds := newDatadrivenTestState()
 	defer ds.cleanup(ctx, t)
 	datadriven.RunTest(t, path, func(t *testing.T, d *datadriven.TestData) string {
 		execWithTagAndPausePoint := func(jobType jobspb.Type) string {
 			const user = "root"
-			sqlDB := ds.getSQLDB(t, lastCreatedCluster, user)
+			sqlDB := ds.getSQLDB(t, lastCreatedCluster, defaultTenant, user)
 			// First, run the schema change.
 
 			_, err := sqlDB.Exec(d.Input)
@@ -522,16 +534,17 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 			}
 			if d.HasArg("beforeVersion") {
 				d.ScanArgs(t, "beforeVersion", &beforeVersion)
-				if !d.HasArg("disable-tenant") {
+				if !d.HasArg("control-tenant") {
 					// TODO(msbutler): figure out why test tenants don't mix with version testing
-					t.Fatal("tests that use beforeVersion must use disable-tenant")
+					t.Fatal("tests that use beforeVersion must use control-tenant")
 				}
 			}
 			if d.HasArg("testingKnobCfg") {
 				d.ScanArgs(t, "testingKnobCfg", &testingKnobCfg)
 			}
-			if d.HasArg("disable-tenant") {
-				defaultTestTenant = base.TODOTestTenantDisabled
+			if d.HasArg("control-tenant") {
+				defaultTestTenant = base.TestControlsTenantsExplicitly
+				defaultTenant = "system"
 			}
 
 			// TODO(ssd): Once TestServer starts up reliably enough:
@@ -562,6 +575,21 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 			lastCreatedCluster = name
 			return ""
 
+		case "switch-tenant":
+			var name string
+			d.ScanArgs(t, "name", &name)
+			defaultTenant = name
+			return ""
+
+		case "create-tenant":
+			var name string
+			d.ScanArgs(t, "name", &name)
+			h := ds.firstNode[lastCreatedCluster]
+			serverutils.StartTenant(t, h, base.TestTenantArgs{
+				TenantID:     roachpb.TenantID{InternalValue: 2},
+				TestingKnobs: base.TestingKnobs{JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals()},
+			})
+
 		case "upgrade-cluster":
 			cluster := lastCreatedCluster
 			user := "root"
@@ -575,23 +603,22 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 				t.Fatalf("clusterVersion %s does not exist in data driven global map", version)
 			}
 			clusterVersion := clusterversion.ByKey(key)
-			_, err := ds.getSQLDB(t, cluster, user).Exec("SET CLUSTER SETTING version = $1", clusterVersion.String())
+			_, err := ds.getSQLDB(t, cluster, defaultTenant, user).Exec("SET CLUSTER SETTING version = $1", clusterVersion.String())
 			require.NoError(t, err)
 			return ""
 
 		case "exec-sql":
 			cluster := lastCreatedCluster
+			tenant := defaultTenant
 			user := "root"
-			if d.HasArg("cluster") {
-				d.ScanArgs(t, "cluster", &cluster)
-			}
-			if d.HasArg("user") {
-				d.ScanArgs(t, "user", &user)
-			}
+			d.MaybeScanArgs(t, "cluster", &cluster)
+			d.MaybeScanArgs(t, "user", &user)
+			d.MaybeScanArgs(t, "tenant", &tenant)
+
 			ds.noticeBuffer = nil
 			checkForClusterSetting(t, d.Input, ds.clusters[cluster].NumServers())
 			d.Input = strings.ReplaceAll(d.Input, "http://COCKROACH_TEST_HTTP_server/", httpAddr)
-			_, err := ds.getSQLDB(t, cluster, user).Exec(d.Input)
+			_, err := ds.getSQLDB(t, cluster, defaultTenant, user).Exec(d.Input)
 			ret := ds.noticeBuffer
 
 			if d.HasArg("ignore-notice") {
@@ -606,11 +633,11 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 				// Find job ID of the pausepoint job.
 				var jobID jobspb.JobID
 				require.NoError(t,
-					ds.getSQLDB(t, cluster, user).QueryRow(
+					ds.getSQLDB(t, cluster, defaultTenant, user).QueryRow(
 						`SELECT job_id FROM [SHOW JOBS] ORDER BY created DESC LIMIT 1`).Scan(&jobID))
 				fmt.Printf("expecting pausepoint, found job ID %d\n\n\n", jobID)
 
-				runner := sqlutils.MakeSQLRunner(ds.getSQLDB(t, cluster, user))
+				runner := sqlutils.MakeSQLRunner(ds.getSQLDB(t, cluster, tenant, user))
 				jobutils.WaitForJobToPause(t, runner, jobID)
 				ret = append(ds.noticeBuffer, "job paused at pausepoint")
 				ret = append(ret, "")
@@ -658,18 +685,17 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 		case "query-sql":
 			cluster := lastCreatedCluster
 			user := "root"
-			if d.HasArg("cluster") {
-				d.ScanArgs(t, "cluster", &cluster)
-			}
-			if d.HasArg("user") {
-				d.ScanArgs(t, "user", &user)
-			}
+			tenant := defaultTenant
+			d.MaybeScanArgs(t, "cluster", &cluster)
+			d.MaybeScanArgs(t, "tenant", &tenant)
+			d.MaybeScanArgs(t, "user", &user)
+
 			checkForClusterSetting(t, d.Input, ds.clusters[cluster].NumServers())
-			db := ds.getSQLDB(t, cluster, user)
+			db := ds.getSQLDB(t, cluster, tenant, user)
 			var output string
 			var err error
 			if d.HasArg("retry") {
-				output, err = ds.queryAsWithRetry(db, d.Input, d.Expected)
+				output, err = ds.queryWithRetry(db, d.Input, d.Expected)
 			} else {
 				output, err = ds.query(db, d.Input)
 			}
@@ -701,7 +727,7 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 			if len(d.CmdArgs) == 0 {
 				t.Fatalf("Must specify at least one variable name.")
 			}
-			rows, err := ds.getSQLDB(t, cluster, user).Query(d.Input)
+			rows, err := ds.getSQLDB(t, cluster, defaultTenant, user).Query(d.Input)
 			if err != nil {
 				return err.Error()
 			}
@@ -776,7 +802,7 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 				if jobID, ok = ds.jobTags[cancelJobTag]; !ok {
 					t.Fatalf("could not find job with tag %s", cancelJobTag)
 				}
-				runner := sqlutils.MakeSQLRunner(ds.getSQLDB(t, cluster, user))
+				runner := sqlutils.MakeSQLRunner(ds.getSQLDB(t, cluster, defaultTenant, user))
 				runner.Exec(t, `CANCEL JOB $1`, jobID)
 				jobutils.WaitForJobToCancel(t, runner, jobID)
 			} else if d.HasArg("resume") {
@@ -787,7 +813,7 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 				if jobID, ok = ds.jobTags[resumeJobTag]; !ok {
 					t.Fatalf("could not find job with tag %s", resumeJobTag)
 				}
-				runner := sqlutils.MakeSQLRunner(ds.getSQLDB(t, cluster, user))
+				runner := sqlutils.MakeSQLRunner(ds.getSQLDB(t, cluster, defaultTenant, user))
 				runner.Exec(t, `RESUME JOB $1`, jobID)
 			} else if d.HasArg("wait-for-state") {
 				var tag string
@@ -797,7 +823,7 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 				if jobID, ok = ds.jobTags[tag]; !ok {
 					t.Fatalf("could not find job with tag %s", tag)
 				}
-				runner := sqlutils.MakeSQLRunner(ds.getSQLDB(t, cluster, user))
+				runner := sqlutils.MakeSQLRunner(ds.getSQLDB(t, cluster, defaultTenant, user))
 				var state string
 				d.ScanArgs(t, "wait-for-state", &state)
 				switch state {
@@ -823,7 +849,7 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 
 			var target string
 			d.ScanArgs(t, "target", &target)
-			handleKVRequest(ctx, t, lastCreatedCluster, ds, request, target)
+			handleKVRequest(ctx, t, lastCreatedCluster, ds, defaultTenant, request, target)
 			return ""
 
 		case "save-cluster-ts":
@@ -835,7 +861,7 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 				t.Fatalf("cannot reuse cluster ts tag %s", timestampTag)
 			}
 			var ts string
-			err := ds.getSQLDB(t, cluster, user).QueryRow(`SELECT cluster_logical_timestamp()`).Scan(&ts)
+			err := ds.getSQLDB(t, cluster, defaultTenant, user).QueryRow(`SELECT cluster_logical_timestamp()`).Scan(&ts)
 			require.NoError(t, err)
 			ds.clusterTimestamps[timestampTag] = ts
 			return ""
@@ -872,7 +898,7 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 			require.NoError(t, err)
 			var filePath string
 			filePathQuery := fmt.Sprintf("SELECT path FROM [SHOW BACKUP FILES FROM LATEST IN %s] LIMIT 1", uri)
-			err = ds.getSQLDB(t, cluster, user).QueryRow(filePathQuery).Scan(&filePath)
+			err = ds.getSQLDB(t, cluster, defaultTenant, user).QueryRow(filePathQuery).Scan(&filePath)
 			require.NoError(t, err)
 			fullPath := filepath.Join(ds.getIODir(t, cluster), parsedURI.Path, filePath)
 			data, err := os.ReadFile(fullPath)
@@ -904,7 +930,7 @@ func runTestDataDriven(t *testing.T, testFilePathFromWorkspace string) {
 	})
 }
 
-func (d *datadrivenTestState) queryAsWithRetry(db *gosql.DB, query, expected string) (string, error) {
+func (d *datadrivenTestState) queryWithRetry(db *gosql.DB, query, expected string) (string, error) {
 	var output string
 	err := testutils.SucceedsSoonError(func() error {
 		var queryErr error
@@ -929,12 +955,12 @@ func (d *datadrivenTestState) query(db *gosql.DB, query string) (string, error) 
 }
 
 func handleKVRequest(
-	ctx context.Context, t *testing.T, cluster string, ds datadrivenTestState, request, target string,
+	ctx context.Context, t *testing.T, cluster string, ds datadrivenTestState, defaultTenant, request, target string,
 ) {
 	user := "root"
 	if request == "DeleteRange" {
 		var tableID uint32
-		err := ds.getSQLDB(t, cluster, user).QueryRow(`SELECT id FROM system.namespace WHERE name = $1`,
+		err := ds.getSQLDB(t, cluster, defaultTenant, user).QueryRow(`SELECT id FROM system.namespace WHERE name = $1`,
 			target).Scan(&tableID)
 		require.NoError(t, err)
 		bankSpan := makeTableSpan(keys.SystemSQLCodec, tableID)

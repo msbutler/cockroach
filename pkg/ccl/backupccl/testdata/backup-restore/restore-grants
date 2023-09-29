@@ -148,7 +148,7 @@ BACKUP INTO 'nodelocal://1/test/'
 # above.
 subtest cluster-restore
 
-new-cluster name=s2 share-io-dir=s1 allow-implicit-access disable-tenant
+new-cluster name=s2 share-io-dir=s1 allow-implicit-access control-tenant
 ----
 
 exec-sql

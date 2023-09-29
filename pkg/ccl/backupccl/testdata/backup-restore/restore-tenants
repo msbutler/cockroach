@@ -1,7 +1,7 @@
 # disabled to probabilistically run within a tenant because the test always runs from the host
 # tenant
 
-new-cluster name=s1 disable-tenant
+new-cluster name=s1 control-tenant
 ----
 
 # Create a few tenants.
@@ -60,7 +60,7 @@ exec-sql
 BACKUP TENANT 6 INTO 'nodelocal://1/tenant6'
 ----
 
-new-cluster name=s2 share-io-dir=s1 disable-tenant
+new-cluster name=s2 share-io-dir=s1 control-tenant
 ----
 
 exec-sql
@@ -160,7 +160,7 @@ SELECT id,name,service_mode FROM system.tenants WHERE name = 'another-name';
 ----
 3 another-name 2
 
-new-cluster name=s3 share-io-dir=s1 disable-tenant
+new-cluster name=s3 share-io-dir=s1 control-tenant
 ----
 
 exec-sql expect-error-regex=(the include_all_virtual_clusters option is only supported for full cluster restores)
