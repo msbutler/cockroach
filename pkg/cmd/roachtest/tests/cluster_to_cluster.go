@@ -1059,6 +1059,7 @@ func runAcceptanceClusterReplication(ctx context.Context, t test.Test, c cluster
 		return nil
 	})
 	m.Wait()
+	panic("boom")
 }
 
 func registerClusterToCluster(r registry.Registry) {
