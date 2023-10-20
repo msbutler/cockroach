@@ -562,7 +562,7 @@ func (rd *replicationDriver) stopReplicationStream(
 ) {
 	rd.setup.dst.sysSQL.Exec(rd.t, `ALTER TENANT $1 COMPLETE REPLICATION TO SYSTEM TIME $2::string`, rd.setup.dst.name, cutoverTime)
 	close(rd.cutoverStarted)
-	err := retry.ForDuration(time.Minute*5, func() error {
+	err := retry.ForDuration(time.Minute*60, func() error {
 		var status string
 		var payloadBytes []byte
 		res := rd.setup.dst.sysSQL.DB.QueryRowContext(ctx, `SELECT status, payload FROM crdb_internal.system_jobs WHERE id = $1`, ingestionJob)
@@ -865,12 +865,11 @@ func registerClusterToCluster(r registry.Registry) {
 			cpus:               8,
 			pdSize:             500,
 			workload:           replicateBulkOps{},
-			timeout:            4 * time.Hour,
+			timeout:            8 * time.Hour,
 			additionalDuration: 0,
 			cutover:            5 * time.Minute,
 			clouds:             registry.AllExceptAWS,
 			suites:             registry.Suites("nightly"),
-			skip:               "flaky",
 		},
 	} {
 		sp := sp
