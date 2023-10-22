@@ -11,8 +11,6 @@ package streamingest
 import (
 	"context"
 	"fmt"
-	"github.com/cockroachdb/cockroach/pkg/security/username"
-	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -521,17 +519,21 @@ func TestTenantStreamingUnavailableStreamAddress(t *testing.T) {
 	// Stop a server on the source cluster. Note that in this test we are trying
 	// to avoid using the source cluster after this point because if we do the
 	// test flakes, see #107499 for more info.
-	destroyedURL, cleanupSinkCert := sqlutils.PGUrl(t, c.SrcCluster.Server(1).SystemLayer().AdvSQLAddr(), t.Name(), url.User(username.RootUser))
-	defer cleanupSinkCert()
-	destroyedAddress := destroyedURL.String()
+	destroyedAddress := c.SrcURL.String()
 	require.NoError(t, c.SrcTenantConn.Close())
 	c.SrcTenantServer.AppStopper().Stop(ctx)
-	c.SrcCluster.StopServer(1)
+	c.SrcCluster.StopServer(0)
 
+	t.Log("stopped server")
+
+	// Switch the SQL connection to a new node, as node 0 has shutdown-- not that
+	// the source and destination tenant are on the same cluster.
+	c.DestSysSQL = sqlutils.MakeSQLRunner(c.DestCluster.Conns[1])
 	c.DestSysSQL.Exec(t, `RESUME JOB $1`, ingestionJobID)
 	jobutils.WaitForJobToRun(t, c.DestSysSQL, jobspb.JobID(ingestionJobID))
+	t.Log("resumed job")
 
-	cutoverTime := c.SrcCluster.Server(0).Clock().Now().GoTime()
+	cutoverTime := c.SrcCluster.Server(1).Clock().Now().GoTime()
 	var cutoverStr string
 	c.DestSysSQL.QueryRow(c.T, `ALTER TENANT $1 COMPLETE REPLICATION TO SYSTEM TIME $2::string`,
 		c.Args.DestTenantName, cutoverTime).Scan(&cutoverStr)
@@ -539,7 +541,7 @@ func TestTenantStreamingUnavailableStreamAddress(t *testing.T) {
 	require.Equal(c.T, cutoverTime, cutoverOutput.GoTime())
 	jobutils.WaitForJobToSucceed(c.T, c.DestSysSQL, jobspb.JobID(ingestionJobID))
 
-	cleanUpTenant := c.StartDestTenant(ctx, nil)
+	cleanUpTenant := c.StartDestTenant(ctx, nil, 1)
 	defer func() {
 		require.NoError(t, cleanUpTenant())
 	}()
