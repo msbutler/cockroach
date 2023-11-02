@@ -113,6 +113,10 @@ func backupRestoreRoundTrip(
 		}
 		defer testUtils.CloseConnections()
 
+		if err := testUtils.Exec(ctx, testRNG, `SET CLUSTER SETTING server.debug.default_vmodule = 'sst_batcher=5,restore_data_processor=4,split_and_scatter_processor=5'`); err != nil {
+			return err
+		}
+
 		dbs := []string{"bank", "tpcc"}
 		runBackgroundWorkload, err := startBackgroundWorkloads(ctx, t.L(), c, m, testRNG, roachNodes, workloadNode, testUtils, dbs)
 		if err != nil {
@@ -211,8 +215,8 @@ func startBackgroundWorkloads(
 	// for the cluster used in this test without overloading it,
 	// which can make the backups take much longer to finish.
 	const numWarehouses = 100
-	tpccInit, tpccRun := tpccWorkloadCmd(testRNG, numWarehouses, roachNodes)
-	bankInit, bankRun := bankWorkloadCmd(testRNG, roachNodes)
+	tpccInit, tpccRun := tpccWorkloadCmd(l, testRNG, numWarehouses, roachNodes)
+	bankInit, bankRun := bankWorkloadCmd(l, testRNG, roachNodes)
 
 	err := c.RunE(ctx, workloadNode, bankInit.String())
 	if err != nil {
