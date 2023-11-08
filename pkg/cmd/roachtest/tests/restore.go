@@ -658,6 +658,8 @@ type backupSpecs struct {
 
 	// workload defines the backed up workload.
 	workload backupWorkload
+
+	nonRevisionHistory bool
 }
 
 func (bs backupSpecs) storagePrefix() string {
@@ -670,10 +672,14 @@ func (bs backupSpecs) storagePrefix() string {
 func (bs backupSpecs) backupCollection() string {
 	// N.B. AWS buckets are _regional_ whereas GCS buckets are _multi-regional_. Thus, in order to avoid egress (cost),
 	// we use us-east-2 for AWS, which is the default region for all roachprod clusters. (See roachprod/vm/aws/aws.go)
+	properties := ""
+	if bs.nonRevisionHistory {
+		properties = "/rev-history=false"
+	}
 	switch bs.storagePrefix() {
 	case "s3":
-		return fmt.Sprintf(`'s3://cockroach-fixtures-us-east-2/backups/%s/%s/inc-count=%d?AUTH=implicit'`,
-			bs.workload.fixtureDir(), bs.version, bs.numBackupsInChain)
+		return fmt.Sprintf(`'s3://cockroach-fixtures-us-east-2/backups/%s/%s/inc-count=%d%s?AUTH=implicit'`,
+			bs.workload.fixtureDir(), bs.version, bs.numBackupsInChain, properties)
 	case "gs":
 		return fmt.Sprintf(`'gs://cockroach-fixtures/backups/%s/%s/inc-count=%d?AUTH=implicit'`,
 			bs.workload.fixtureDir(), bs.version, bs.numBackupsInChain)
@@ -706,6 +712,10 @@ func makeBackupSpecs(override backupSpecs, specs backupSpecs) backupSpecs {
 
 	if override.numBackupsInChain != 0 {
 		specs.numBackupsInChain = override.numBackupsInChain
+	}
+
+	if override.nonRevisionHistory != specs.nonRevisionHistory {
+		specs.nonRevisionHistory = override.nonRevisionHistory
 	}
 
 	if override.workload != nil {

@@ -50,10 +50,11 @@ var defaultBackupFixtureSpecs = scheduledBackupSpecs{
 	ignoreExistingBackups: false,
 
 	backupSpecs: backupSpecs{
-		version:           "v23.1.11",
-		cloud:             spec.AWS,
-		fullBackupDir:     "LATEST",
-		numBackupsInChain: 48,
+		version:            "v23.1.11",
+		cloud:              spec.AWS,
+		fullBackupDir:      "LATEST",
+		numBackupsInChain:  48,
+		nonRevisionHistory: false,
 		workload: tpceRestore{
 			customers: 25000,
 		},
@@ -76,7 +77,11 @@ func (sbs scheduledBackupSpecs) scheduledBackupCmd() string {
 	// backup schedules. To ensure that only one full backup chain gets created,
 	// begin the backup schedule at the beginning of the week, as a new full
 	// backup will get created on Sunday at Midnight ;)
-	backupCmd := fmt.Sprintf(`BACKUP INTO %s WITH revision_history`, sbs.backupCollection())
+	options := ""
+	if !sbs.nonRevisionHistory {
+		options = "WITH revision_history"
+	}
+	backupCmd := fmt.Sprintf(`BACKUP INTO %s %s`, sbs.backupCollection(), options)
 	cmd := fmt.Sprintf(`CREATE SCHEDULE %s FOR %s RECURRING '%s' FULL BACKUP '@weekly' WITH SCHEDULE OPTIONS first_run = 'now'`,
 		scheduleLabel, backupCmd, sbs.incrementalBackupCrontab)
 	if sbs.ignoreExistingBackups {
@@ -235,9 +240,13 @@ func registerBackupFixtures(r registry.Registry) {
 			// - restore/tpce/400GB/aws/nodes=4/cpus=16
 			// - restore/tpce/400GB/aws/nodes=4/cpus=8
 			// - restore/tpce/400GB/aws/nodes=8/cpus=8
-			hardware:             makeHardwareSpecs(hardwareSpecs{workloadNode: true}),
-			scheduledBackupSpecs: makeBackupFixtureSpecs(scheduledBackupSpecs{}),
-			timeout:              5 * time.Hour,
+			hardware: makeHardwareSpecs(hardwareSpecs{workloadNode: true}),
+			scheduledBackupSpecs: makeBackupFixtureSpecs(scheduledBackupSpecs{
+				backupSpecs: backupSpecs{
+					nonRevisionHistory: true,
+				},
+			}),
+			timeout: 5 * time.Hour,
 			initWorkloadViaRestore: restoreSpecs{
 				backup:                 backupSpecs{version: "v22.2.0", numBackupsInChain: 48},
 				restoreUptoIncremental: 48,
@@ -257,7 +266,8 @@ func registerBackupFixtures(r registry.Registry) {
 					incrementalBackupCrontab: "*/2 * * * *",
 					ignoreExistingBackups:    true,
 					backupSpecs: backupSpecs{
-						workload: tpceRestore{customers: 1000}}}),
+						nonRevisionHistory: true,
+						workload:           tpceRestore{customers: 1000}}}),
 			initWorkloadViaRestore: restoreSpecs{
 				backup:                 backupSpecs{version: "v22.2.1", numBackupsInChain: 48},
 				restoreUptoIncremental: 48,
@@ -272,7 +282,8 @@ func registerBackupFixtures(r registry.Registry) {
 			hardware: makeHardwareSpecs(hardwareSpecs{nodes: 10, volumeSize: 2000, workloadNode: true}),
 			scheduledBackupSpecs: makeBackupFixtureSpecs(scheduledBackupSpecs{
 				backupSpecs: backupSpecs{
-					workload: tpceRestore{customers: 500000}}}),
+					nonRevisionHistory: true,
+					workload:           tpceRestore{customers: 500000}}}),
 			timeout: 25 * time.Hour,
 			initWorkloadViaRestore: restoreSpecs{
 				backup:                 backupSpecs{version: "v22.2.1", numBackupsInChain: 48},
