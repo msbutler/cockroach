@@ -38,7 +38,7 @@ func registerOnlineRestore(r registry.Registry) {
 	for _, sp := range []restoreSpecs{
 		{
 			// 400GB tpce Online Restore
-			hardware:               makeHardwareSpecs(hardwareSpecs{ebsThroughput: 250 /* MB/s */, workloadNode: true}),
+			hardware:               makeHardwareSpecs(hardwareSpecs{ebsThroughput: 250 /* MB/s */, workloadNode: true, nodes: 1}),
 			backup:                 makeRestoringBackupSpecs(backupSpecs{nonRevisionHistory: true, version: "v23.1.11"}),
 			timeout:                5 * time.Hour,
 			clouds:                 registry.AllClouds,
