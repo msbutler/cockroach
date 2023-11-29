@@ -14,7 +14,6 @@ import (
 	"context"
 	gosql "database/sql"
 	"math/rand"
-	"sync"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/cluster"
@@ -28,7 +27,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
-	"github.com/cockroachdb/errors"
 )
 
 var (
@@ -322,11 +320,8 @@ func (u *CommonTestUtils) CloseConnections() {
 }
 
 func workloadWithCancel(m cluster.Monitor, fn func(ctx context.Context) error) func() {
-	done := make(chan struct{})
-	cleanShutdown := make(chan struct{})
 
 	cancelWorkload := m.GoWithCancel(func(ctx context.Context) error {
-		defer close(done)
 		err := fn(ctx)
 		if ctx.Err() != nil {
 			// Workload context was cancelled as a normal part of test shutdown.
@@ -335,25 +330,7 @@ func workloadWithCancel(m cluster.Monitor, fn func(ctx context.Context) error) f
 		return err
 	})
 
-	m.Go(func(ctx context.Context) error {
-		select {
-		case <-done:
-			cancelWorkload()
-			return errors.New("workload unexpectedly completed before cancellation")
-		case <-ctx.Done():
-			cancelWorkload()
-			return nil
-		case <-cleanShutdown:
-			cancelWorkload()
-			return nil
-		}
-	})
-
-	var closeOnce sync.Once
-	// Make sure to only close the background channel once, allowing the
-	// caller to call the StopFunc multiple times (subsequent calls will
-	// be no-ops).
 	return func() {
-		closeOnce.Do(func() { close(cleanShutdown) })
+		cancelWorkload()
 	}
 }
