@@ -8420,6 +8420,23 @@ func TestRestoringAcrossVersions(t *testing.T) {
 		sqlDB.ExpectErr(t, "the backup is from a version older than our minimum restorable version",
 			`RESTORE DATABASE r1 FROM 'nodelocal://1/cross_version'`)
 	})
+	t.Run("restore-nil-version-after-pause", func(t *testing.T) {
+		minSupportedVersion := tc.ApplicationLayer(0).ClusterSettings().Version.MinSupportedVersion()
+		setManifestClusterVersion(minSupportedVersion)
+		sqlDB.Exec(t, "SET CLUSTER SETTING jobs.debug.pausepoints = 'restore.before_load_descriptors_from_backup'")
+		var jobID int
+		sqlDB.QueryRow(t, `RESTORE DATABASE r1 FROM 'nodelocal://1/cross_version' with DETACHED`).Scan(&jobID)
+		jobutils.WaitForJobToPause(t, sqlDB, jobspb.JobID(jobID))
+
+		setManifestClusterVersion(roachpb.Version{})
+
+		sqlDB.Exec(t, "SET CLUSTER SETTING jobs.debug.pausepoints = ''")
+		sqlDB.Exec(t, "RESUME JOB $1", jobID)
+		jobutils.WaitForJobToFail(t, sqlDB, jobspb.JobID(jobID))
+		payload := jobutils.GetJobPayload(t, sqlDB, jobspb.JobID(jobID))
+		require.Contains(t, payload.Error, "the backup is from a version older than our minimum restorable version")
+
+	})
 }
 
 // TestManifestBitFlip tests that we can detect a corrupt manifest when a bit
