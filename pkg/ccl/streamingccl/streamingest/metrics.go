@@ -93,19 +93,19 @@ var (
 		Unit:        metric.Unit_TIMESTAMP_NS,
 	}
 
-	metaReplicatedTimeSeconds = metric.Metadata{
-		Name:        "physical_replication.replicated_time_seconds",
+	metaReplicatedTimeNanos = metric.Metadata{
+		Name:        "physical_replication.replicated_time_nanoseconds",
 		Help:        "The replicated time of the physical replication stream in seconds since the unix epoch.",
-		Measurement: "Seconds",
-		Unit:        metric.Unit_SECONDS,
+		Measurement: "Nanoseconds",
+		Unit:        metric.Unit_NANOSECONDS,
 	}
 
 	// This metric only exists to help display the replicated time on the DBConsole.
-	metaCurrentTimeSeconds = metric.Metadata{
-		Name:        "physical_replication.current_time_seconds",
+	metaCurrentTimeNanos = metric.Metadata{
+		Name:        "physical_replication.current_time_nanoseconds",
 		Help:        "The wall clock time on physical replication stream coordinator in seconds since the unix epoch.",
-		Measurement: "Seconds",
-		Unit:        metric.Unit_SECONDS,
+		Measurement: "Nanoseconds",
+		Unit:        metric.Unit_NANOSECONDS,
 	}
 	metaJobProgressUpdates = metric.Metadata{
 		Name:        "physical_replication.job_progress_updates",
@@ -147,8 +147,8 @@ type Metrics struct {
 	RunningCount               *metric.Gauge
 	EarliestDataCheckpointSpan *metric.Gauge
 	LatestDataCheckpointSpan   *metric.Gauge
-	ReplicatedTimeSeconds      *metric.Gauge
-	CurrentTimeSeconds         *metric.Gauge
+	ReplicatedTimeNanos        *metric.Gauge
+	CurrentTimeNanos           *metric.Gauge
 	ReplicationCutoverProgress *metric.Gauge
 }
 
@@ -189,8 +189,8 @@ func MakeMetrics(histogramWindow time.Duration) metric.Struct {
 		RunningCount:               metric.NewGauge(metaStreamsRunning),
 		EarliestDataCheckpointSpan: metric.NewGauge(metaEarliestDataCheckpointSpan),
 		LatestDataCheckpointSpan:   metric.NewGauge(metaLatestDataCheckpointSpan),
-		ReplicatedTimeSeconds:      metric.NewGauge(metaReplicatedTimeSeconds),
-		CurrentTimeSeconds:         metric.NewGauge(metaCurrentTimeSeconds),
+		ReplicatedTimeNanos:        metric.NewGauge(metaReplicatedTimeNanos),
+		CurrentTimeNanos:           metric.NewGauge(metaCurrentTimeNanos),
 		ReplicationCutoverProgress: metric.NewGauge(metaReplicationCutoverProgress),
 	}
 	return m
