@@ -127,6 +127,10 @@ func clusterNodeCount(gw gossip.OptionalGossip) (int, error) {
 	return nodes, nil
 }
 
+func fileFromIntroducedSpan(f *backuppb.BackupManifest_File) bool {
+	return f.StartTime.IsEmpty() && !f.EndTime.IsEmpty()
+}
+
 // backup exports a snapshot of every kv entry into ranged sstables.
 //
 // The output is an sstable per range with files in the following locations:
@@ -176,7 +180,7 @@ func backup(
 		}
 
 		f := it.Value()
-		if f.StartTime.IsEmpty() && !f.EndTime.IsEmpty() {
+		if fileFromIntroducedSpan(f) {
 			completedIntroducedSpans = append(completedIntroducedSpans, f.Span)
 		} else {
 			completedSpans = append(completedSpans, f.Span)
