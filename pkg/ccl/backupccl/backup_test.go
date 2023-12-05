@@ -11204,3 +11204,49 @@ func TestRestoreMemoryMonitoringMinWorkerMemory(t *testing.T) {
 	actualFingerprints := sqlDB.QueryStr(t, "SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE restore.bank")
 	require.Equal(t, expectedFingerprints, actualFingerprints)
 }
+
+// TestBoundBackupExportOnRanges tests that export requests never get sent
+// across range boundaries, even if the ranges are empty.
+func TestBoundBackupExportOnRanges(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	const numAccounts = 1
+
+	waitForSplits := make(chan struct{})
+	var responseCount atomic.Int32
+	params := base.TestClusterArgs{}
+	knobs := base.TestingKnobs{
+		DistSQL: &execinfra.TestingKnobs{
+			BackupRestoreTestingKnobs: &sql.BackupRestoreTestingKnobs{
+				RunBeforeBackupFlow: func(ctx context.Context) {
+					<-waitForSplits
+				},
+				RunAfterExportingSpanEntry: func(ctx context.Context, response *kvpb.ExportResponse) {
+					responseCount.Add(1)
+				},
+			},
+		},
+	}
+	params.ServerArgs.Knobs = knobs
+	tc, sqlDB, _, cleanupFn := backupRestoreTestSetupWithParams(t, singleNode, numAccounts, InitManualReplication, params)
+	defer cleanupFn()
+
+	rowsPerRange := 2
+	numRanges := 30
+	sqlDB.Exec(t, "SET CLUSTER SETTING bulkio.backup.presplit_request_spans.enabled=true")
+	var jobID int
+	sqlDB.QueryRow(t, "BACKUP DATABASE data INTO 'userfile:///backup' WITH detached").Scan(&jobID)
+	sqlDB.Exec(t, `ALTER TABLE data.bank SPLIT AT (SELECT * FROM generate_series($1::INT, $2::INT, $3::INT))`,
+		rowsPerRange, (numRanges-1)*rowsPerRange, rowsPerRange)
+	waitForTableSplitCount(t, tc.Conns[0], "bank", "data", numRanges)
+
+	var rangeCount int
+	sqlDB.QueryRow(t, "SELECT count(*) FROM [SHOW RANGES FROM TABLE data.bank]").Scan(&rangeCount)
+	// Some splits may not succeed, so just ensure that at least a few splits worked.
+	require.Greater(t, rangeCount, numRanges/3)
+	close(waitForSplits)
+	jobutils.WaitForJobToSucceed(t, sqlDB, jobspb.JobID(jobID))
+	exportRequestCount := responseCount.Load()
+	require.LessOrEqual(t, int32(rangeCount-2), exportRequestCount)
+	require.GreaterOrEqual(t, int32(rangeCount+2), exportRequestCount)
+}

@@ -308,6 +308,22 @@ func waitForTableSplit(t *testing.T, conn *gosql.DB, tableName, dbName string) {
 	})
 }
 
+func waitForTableSplitCount(t *testing.T, conn *gosql.DB, tableName, dbName string, expectedCount int) {
+	t.Helper()
+	testutils.SucceedsSoon(t, func() error {
+		count := 0
+		if err := conn.QueryRow(
+			fmt.Sprintf("SELECT count(*) FROM [SHOW RANGES FROM TABLE %s.%s]",
+				tree.NameString(dbName), tree.NameString(tableName))).Scan(&count); err != nil {
+			return err
+		}
+		if count < expectedCount {
+			return errors.New("waiting for table split")
+		}
+		return nil
+	})
+}
+
 func getTableStartKey(t *testing.T, conn *gosql.DB, tableName, dbName string) roachpb.Key {
 	t.Helper()
 	row := conn.QueryRow(
