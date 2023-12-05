@@ -1376,6 +1376,24 @@ into_db='restoredb', %s)`, encryptionOption), backupLoc1)
 	}
 }
 
+func TestFilterSpans(t *testing.T) {
+
+	makeKey := func(key string) roachpb.Key {
+		return []byte(key)
+	}
+	aSpan := roachpb.Span{
+		Key:    makeKey("A"),
+		EndKey: makeKey("A"),
+	}
+
+	bigSpan := roachpb.Span{
+		Key:    makeKey("A"),
+		EndKey: makeKey("C"),
+	}
+	rSPan := filterSpans([]roachpb.Span{bigSpan}, []roachpb.Span{aSpan})
+	fmt.Printf("%s", rSPan) // prints [{A\x00-C}]
+}
+
 // TestRestoreCheckpointing checks that progress persists to the job record
 // using the new span frontier. The test takes the following approach:
 //
