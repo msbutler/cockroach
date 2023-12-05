@@ -1376,6 +1376,199 @@ into_db='restoredb', %s)`, encryptionOption), backupLoc1)
 	}
 }
 
+func TestBackupCheckpointingPausePoint(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	defer jobs.TestingSetProgressThresholds()()
+
+	ctx := context.Background()
+	exportedSpanCount := make(map[string]int)
+	tableCount := 7
+	var logExportSpanCount bool
+	params := base.TestClusterArgs{}
+	var mu syncutil.Mutex
+	knobs := base.TestingKnobs{
+		DistSQL: &execinfra.TestingKnobs{
+			BackupRestoreTestingKnobs: &sql.BackupRestoreTestingKnobs{
+				RunAfterExportingSpanEntry: func(ctx context.Context, response *kvpb.ExportResponse) {
+					mu.Lock()
+					if logExportSpanCount {
+						if response.Files != nil && len(response.Files) > 0 {
+							exportedSpan := response.Files[0].Span.String()
+							exportedSpanCount[exportedSpan] += 1
+						}
+					}
+					mu.Unlock()
+				},
+			},
+		},
+		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+	}
+	params.ServerArgs = base.TestServerArgs{Knobs: knobs}
+
+	tc, sqlDB, _, cleanupFn := backupRestoreTestSetupWithParams(t, singleNode, 1,
+		InitManualReplication, params)
+	defer cleanupFn()
+
+	sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = 'restore.before_publishing_descriptors'`)
+
+	sqlDB.Exec(t, `CREATE DATABASE d`)
+	sqlDB.Exec(t, "USE d")
+
+	// t0: Backup a table that we'll then restore with pause
+	restoringTable := "r"
+	sqlDB.Exec(t, fmt.Sprintf(`CREATE TABLE %s (id INT PRIMARY KEY, s STRING)`, restoringTable))
+	sqlDB.Exec(t, fmt.Sprintf(`INSERT INTO %s VALUES (1, 'x'),(2,'y')`, restoringTable))
+	sqlDB.Exec(t, fmt.Sprintf(`BACKUP DATABASE d INTO '%s'`, localFoo))
+	sqlDB.Exec(t, `DROP TABLE r`)
+	var restoreJobID int
+	sqlDB.QueryRow(t, `RESTORE TABLE r FROM LATEST IN $1 with detached`, localFoo).Scan(&restoreJobID)
+	jobutils.WaitForJobToPause(t, sqlDB, jobspb.JobID(restoreJobID))
+
+	// t1: run an inc backup while restore is paused
+	sqlDB.Exec(t, fmt.Sprintf(`BACKUP DATABASE d INTO LATEST IN '%s'`, localFoo))
+
+	// t2: unpause the restore
+	sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = ''`)
+	sqlDB.Exec(t, `RESUME JOB $1`, restoreJobID)
+	jobutils.WaitForJobToSucceed(t, sqlDB, jobspb.JobID(restoreJobID))
+
+	// t3: run an incremental backup which pauses after the flow
+	sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = 'backup.after.flow'`)
+	var jobID int
+	sqlDB.QueryRow(t, fmt.Sprintf(`BACKUP DATABASE d INTO LATEST IN '%s' with detached`, localFoo)).Scan(&jobID)
+	jobutils.WaitForJobToPause(t, sqlDB, jobspb.JobID(jobID))
+	logExportSpanCount = true
+	sqlDB.Exec(t, `SET CLUSTER SETTING jobs.debug.pausepoints = ''`)
+
+	// ENSURE that: we checkpointed the introduced spans
+
+	sqlDB.Exec(t, "RESUME JOB $1", jobID)
+	jobutils.WaitForJobToSucceed(t, sqlDB, jobspb.JobID(jobID))
+
+	// ENSURE that: filter only the introduced spans
+
+	sqlDB.Exec(t, "RESTORE DATABASE d FROM LATEST IN $1 with new_db_name=d2", localFoo)
+	dFingerprint, err := fingerprintutils.FingerprintDatabase(ctx, tc.Conns[0], "d", fingerprintutils.Stripped())
+	require.NoError(t, err)
+	d2Fingerprint, err := fingerprintutils.FingerprintDatabase(ctx, tc.Conns[0], "d2", fingerprintutils.Stripped())
+	require.NoError(t, err)
+	require.NoError(t, fingerprintutils.CompareDatabaseFingerprints(dFingerprint, d2Fingerprint))
+}
+
+func TestBackupFullBackupCheckpointing(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+	defer jobs.TestingSetProgressThresholds()()
+
+	fullBackupCmd := fmt.Sprintf(`BACKUP DATABASE d INTO '%s' WITH detached`, localFoo)
+
+	ctx := context.Background()
+	exportedSpanCount := make(map[string]int)
+	tableCount := 7
+	waitForProgress := make(chan struct{})
+	waitForPause := make(chan struct{})
+	var holdUpCheckpointing bool
+	var logExportSpanCount bool
+	params := base.TestClusterArgs{}
+	knobs := base.TestingKnobs{
+		DistSQL: &execinfra.TestingKnobs{
+			BackupRestoreTestingKnobs: &sql.BackupRestoreTestingKnobs{
+				RunAfterExportingSpanEntry: func(ctx context.Context, response *kvpb.ExportResponse) {
+					if logExportSpanCount {
+						if response.Files != nil && len(response.Files) > 0 {
+							exportedSpan := response.Files[0].Span.String()
+							exportedSpanCount[exportedSpan] += 1
+						}
+					}
+				},
+			},
+		},
+		SQLExecutor: &sql.ExecutorTestingKnobs{
+			AfterBackupCheckpoint: func() {
+				if holdUpCheckpointing && len(exportedSpanCount) > 0 {
+					close(waitForProgress)
+					<-waitForPause
+				}
+			},
+		},
+		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+	}
+	params.ServerArgs = base.TestServerArgs{Knobs: knobs}
+
+	tc, sqlDB, dir, cleanupFn := backupRestoreTestSetupWithParams(t, singleNode, 1,
+		InitManualReplication, params)
+	defer cleanupFn()
+
+	backupCmdWithPause := fullBackupCmd
+	sqlDB.Exec(t, `CREATE DATABASE d`)
+
+	holdUpCheckpointing = true
+	logExportSpanCount = true
+	for i := 1; i <= tableCount; i++ {
+		tableName := fmt.Sprintf("d.t%d", i)
+		sqlDB.Exec(t, fmt.Sprintf(`CREATE TABLE %s (id INT PRIMARY KEY, s STRING)`, tableName))
+		sqlDB.Exec(t, fmt.Sprintf(`INSERT INTO %s VALUES (1, 'x'),(2,'y')`, tableName))
+	}
+	var jobID int
+	sqlDB.QueryRow(t, backupCmdWithPause).Scan(&jobID)
+	<-waitForProgress
+	sqlDB.Exec(t, "PAUSE JOB $1", jobID)
+	jobutils.WaitForJobToPause(t, sqlDB, jobspb.JobID(jobID))
+
+	backupDetails := jobutils.GetJobPayload(t, sqlDB, jobspb.JobID(jobID)).GetBackup()
+
+	mem, storage, _, _ := getDummyManifestInputs(ctx, t, backupDetails.URI, dir, tc.Servers[0].ExecutorConfig().(sql.ExecutorConfig))
+	desc, _, err := backupinfo.ReadBackupCheckpointManifest(ctx, mem, storage,
+		backupinfo.BackupManifestCheckpointName, nil, nil)
+	require.NoError(t, err)
+	close(waitForPause)
+	holdUpCheckpointing = false
+	sqlDB.Exec(t, "RESUME JOB $1", jobID)
+	jobutils.WaitForJobToSucceed(t, sqlDB, jobspb.JobID(jobID))
+
+	for _, file := range desc.Files {
+		// Assert that all spans in the checkpoint were only exported once
+		require.Less(t, exportedSpanCount[file.Span.String()], 2)
+	}
+	sqlDB.Exec(t, "RESTORE DATABASE d FROM LATEST IN $1 with new_db_name=d2", localFoo)
+	dFingerprint, err := fingerprintutils.FingerprintDatabase(ctx, tc.Conns[0], "d", fingerprintutils.Stripped())
+	require.NoError(t, err)
+	d2Fingerprint, err := fingerprintutils.FingerprintDatabase(ctx, tc.Conns[0], "d2", fingerprintutils.Stripped())
+	require.NoError(t, err)
+	require.NoError(t, fingerprintutils.CompareDatabaseFingerprints(dFingerprint, d2Fingerprint))
+}
+
+func getDummyManifestInputs(ctx context.Context, t *testing.T, uri, dir string, execCfg sql.ExecutorConfig) (*mon.BoundAccount, cloud.ExternalStorage, *jobspb.BackupEncryptionOptions, *backupencryption.BackupKMSEnv) {
+	st := cluster.MakeTestingClusterSettings()
+	m := mon.NewMonitor("test-monitor", mon.MemoryResource, nil, nil, 0, 0, st)
+	m.Start(ctx, nil, mon.NewStandaloneBudget(128<<20))
+	mem := m.MakeBoundAccount()
+
+	dummyEncOpts := jobspb.BackupEncryptionOptions{
+		Mode: jobspb.EncryptionMode_None,
+	}
+	kmsEnv := backupencryption.MakeBackupKMSEnv(
+		st,
+		&execCfg.ExternalIODirConfig,
+		execCfg.InternalDB,
+		username.RootUserName(),
+	)
+
+	storage, err := cloud.ExternalStorageFromURI(ctx,
+		uri,
+		base.ExternalIODirConfig{},
+		st,
+		blobs.TestBlobServiceClient(dir),
+		username.RootUserName(),
+		nil, /* db */
+		nil, /* limiters */
+		cloud.NilMetrics,
+	)
+	require.NoError(t, err)
+	return &mem, storage, &dummyEncOpts, &kmsEnv
+}
+
 // TestRestoreCheckpointing checks that progress persists to the job record
 // using the new span frontier. The test takes the following approach:
 //

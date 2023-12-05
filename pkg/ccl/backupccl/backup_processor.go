@@ -669,6 +669,8 @@ func runBackupProcessor(
 								revStart:      resp.StartTime,
 								atKeyBoundary: file.EndKeyTS.IsEmpty()}
 							if span.start != spec.BackupStartTime {
+								// I.e. we only set start and end times after
+								// revision history returns early or introduced spans.
 								ret.metadata.StartTime = span.start
 								ret.metadata.EndTime = span.end
 							}

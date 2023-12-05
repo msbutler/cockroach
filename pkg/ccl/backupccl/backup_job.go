@@ -169,8 +169,11 @@ func backup(
 
 		f := it.Value()
 		if f.StartTime.IsEmpty() && !f.EndTime.IsEmpty() {
+			// We never actually hit this case, which implies that we've got data corruption.
 			completedIntroducedSpans = append(completedIntroducedSpans, f.Span)
+			panic("panic to validate that introduced span checkpointing works")
 		} else {
+			// Uh oh, if an introduced span gets put here, then we're screwed.
 			completedSpans = append(completedSpans, f.Span)
 		}
 	}
@@ -293,6 +296,7 @@ func backup(
 			if err := types.UnmarshalAny(&progress.ProgressDetails, &progDetails); err != nil {
 				log.Errorf(ctx, "unable to unmarshal backup progress details: %+v", err)
 			}
+			// Why do we do this
 			if backupManifest.RevisionStartTime.Less(progDetails.RevStartTime) {
 				backupManifest.RevisionStartTime = progDetails.RevStartTime
 			}
@@ -861,7 +865,9 @@ func (b *backupResumer) Resume(ctx context.Context, execCtx interface{}) error {
 			return errors.Wrap(reloadBackupErr, "could not reload backup manifest when retrying")
 		}
 	}
-
+	if err := p.ExecCfg().JobRegistry.CheckPausepoint("backup.after.flow"); err != nil {
+		return err
+	}
 	// We have exhausted retries without getting a "PermanentBulkJobError", but
 	// something must be wrong if we keep seeing errors so give up and fail to
 	// ensure that any alerting on failures is triggered and that any subsequent
