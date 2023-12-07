@@ -346,7 +346,7 @@ func backup(
 				}
 				lastCheckpoint = timeutil.Now()
 				if execCtx.ExecCfg().TestingKnobs.AfterBackupCheckpoint != nil {
-					execCtx.ExecCfg().TestingKnobs.AfterBackupCheckpoint()
+					execCtx.ExecCfg().TestingKnobs.AfterBackupCheckpoint(len(backupManifest.Files) > 0)
 				}
 			}
 		}

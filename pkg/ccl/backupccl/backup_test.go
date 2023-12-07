@@ -10151,7 +10151,7 @@ func TestBackupNoOverwriteCheckpoint(t *testing.T) {
 	params := base.TestClusterArgs{}
 	knobs := base.TestingKnobs{
 		SQLExecutor: &sql.ExecutorTestingKnobs{
-			AfterBackupCheckpoint: func() {
+			AfterBackupCheckpoint: func(hasFiles bool) {
 				numCheckpointsWritten++
 			},
 		},
@@ -11203,4 +11203,136 @@ func TestRestoreMemoryMonitoringMinWorkerMemory(t *testing.T) {
 	expectedFingerprints := sqlDB.QueryStr(t, "SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE data.bank")
 	actualFingerprints := sqlDB.QueryStr(t, "SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE restore.bank")
 	require.Equal(t, expectedFingerprints, actualFingerprints)
+}
+
+func TestPauseAfterSplitMidkey(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	dir, dirCleanupFn := testutils.TempDir(t)
+	defer dirCleanupFn()
+
+	ctx := context.Background()
+
+	// We turn on the following testing knobs during the backup whose
+	// checkpoints we want to track.k
+	var holdUpCheckpointing bool
+	waitForProgress := make(chan struct{})
+	waitForPause := make(chan struct{})
+	var endKeyTS hlc.Timestamp
+
+	params := base.TestClusterArgs{}
+	var mu syncutil.Mutex
+	knobs := base.TestingKnobs{
+		SQLExecutor: &sql.ExecutorTestingKnobs{
+			AfterBackupCheckpoint: func(hasFiles bool) {
+				mu.Lock()
+				if holdUpCheckpointing && hasFiles {
+					close(waitForProgress)
+					<-waitForPause
+					holdUpCheckpointing = false
+				}
+				mu.Unlock()
+			},
+		},
+		Store: &kvserver.StoreTestingKnobs{
+			TestingResponseFilter: func(ctx context.Context, ba *kvpb.BatchRequest, br *kvpb.BatchResponse) *kvpb.Error {
+				// PAUSE AFTER FIRST REWRITE TO INDUCE A CHECKPOINT
+				for i, ru := range br.Responses {
+					if exportRequest, ok := ba.Requests[i].GetInner().(*kvpb.ExportRequest); ok &&
+						!isLeasingExportRequest(exportRequest) {
+						exportResponse := ru.GetInner().(*kvpb.ExportResponse)
+						require.Equal(t, 1, len(exportResponse.Files))
+						fileStartKey := exportResponse.Files[0].Span.Key
+						fileEndKey := exportResponse.Files[0].Span.EndKey
+						fmt.Printf("Start %s, End %s\n", fileStartKey, fileEndKey)
+						exportResponse.Files[0].Span.EndKey = fileStartKey
+						exportResponse.Files[0].EndKeyTS = endKeyTS
+						exportResponse.ResumeSpan = &roachpb.Span{
+							Key:    fileStartKey,
+							EndKey: fileEndKey,
+						}
+					}
+				}
+				return nil
+			},
+		},
+		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+	}
+	params.ServerArgs = base.TestServerArgs{Knobs: knobs}
+
+	tc, sqlDB, cleanupFn := backupRestoreTestSetupEmpty(t, singleNode, dir, InitManualReplication, params)
+	defer cleanupFn()
+
+	sqlDB.Exec(t, `CREATE DATABASE d`)
+	sqlDB.Exec(t, "USE d")
+
+	tableName := "dummy"
+	sqlDB.Exec(t, fmt.Sprintf(`CREATE TABLE %s (id INT PRIMARY KEY, s STRING)`, tableName))
+	endKeyTS = hlc.Timestamp{WallTime: timeutil.Now().UnixNano()}
+	sqlDB.Exec(t, fmt.Sprintf(`INSERT INTO %s VALUES (1, 'x'),(2,'y')`, tableName))
+	//sqlDB.Exec(t, fmt.Sprintf(`UPDATE  %s VALUES (1, 'z')`, tableName))
+
+	//codec = keys.MakeSQLCodec(tc.Servers[0].RPCContext().TenantID)
+	//tableID = sqlutils.QueryTableID(t, tc.Conns[0], "d", "public", "dummy")
+
+	holdUpCheckpointing = true
+	sqlDB.Exec(t, "SET CLUSTER SETTING bulkio.backup.checkpoint_interval = '1s'")
+	var jobID int
+	sqlDB.QueryRow(t, fmt.Sprintf(`BACKUP DATABASE d INTO '%s' with revision_history, detached`, localFoo)).Scan(&jobID)
+	<-waitForProgress
+	sqlDB.Exec(t, "PAUSE JOB $1", jobID)
+	jobutils.WaitForJobToPause(t, sqlDB, jobspb.JobID(jobID))
+	close(waitForPause)
+
+	backupDetails := jobutils.GetJobPayload(t, sqlDB, jobspb.JobID(jobID)).GetBackup()
+
+	mem, storage, _, _ := getDummyManifestInputs(ctx, t, backupDetails.URI, dir, tc.Servers[0].ExecutorConfig().(sql.ExecutorConfig))
+	desc, _, err := backupinfo.ReadBackupCheckpointManifest(ctx, mem, storage,
+		backupinfo.BackupManifestCheckpointName, nil, nil)
+	require.NoError(t, err)
+	fmt.Printf("%s-%s\n", desc.Files[0].Span.Key, desc.Files[0].Span.EndKey)
+	//fmt.Printf("%s\n", desc.Files[0].Span)
+
+	// begin backup
+	// intercept response to add a split midkey span
+	// as soon as checkpoint comes in, read and see if we have a split midkey span
+
+}
+
+func getDummyManifestInputs(
+	ctx context.Context, t *testing.T, uri, dir string, execCfg sql.ExecutorConfig,
+) (
+	*mon.BoundAccount,
+	cloud.ExternalStorage,
+	*jobspb.BackupEncryptionOptions,
+	*backupencryption.BackupKMSEnv,
+) {
+	st := cluster.MakeTestingClusterSettings()
+	m := mon.NewMonitor("test-monitor", mon.MemoryResource, nil, nil, 0, 0, st)
+	m.Start(ctx, nil, mon.NewStandaloneBudget(128<<20))
+	mem := m.MakeBoundAccount()
+
+	dummyEncOpts := jobspb.BackupEncryptionOptions{
+		Mode: jobspb.EncryptionMode_None,
+	}
+	kmsEnv := backupencryption.MakeBackupKMSEnv(
+		st,
+		&execCfg.ExternalIODirConfig,
+		execCfg.InternalDB,
+		username.RootUserName(),
+	)
+
+	storage, err := cloud.ExternalStorageFromURI(ctx,
+		uri,
+		base.ExternalIODirConfig{},
+		st,
+		blobs.TestBlobServiceClient(dir),
+		username.RootUserName(),
+		nil, /* db */
+		nil, /* limiters */
+		cloud.NilMetrics,
+	)
+	require.NoError(t, err)
+	return &mem, storage, &dummyEncOpts, &kmsEnv
 }

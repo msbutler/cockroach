@@ -1640,7 +1640,7 @@ type ExecutorTestingKnobs struct {
 
 	// AfterBackupCheckpoint if set will be called after a BACKUP-CHECKPOINT
 	// is written.
-	AfterBackupCheckpoint func()
+	AfterBackupCheckpoint func(hasFiles bool)
 
 	// OnRecordTxnFinish, if set, will be called as we record a transaction
 	// finishing.
