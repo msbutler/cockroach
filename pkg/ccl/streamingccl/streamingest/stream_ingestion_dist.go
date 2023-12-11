@@ -220,7 +220,7 @@ func startDistIngestion(
 		msg := redact.Sprintf("creating %d initial splits based on the source cluster's topology",
 			countNumOfSplitsAndScatters())
 		updateRunningStatus(ctx, ingestionJob, jobspb.CreatingInitialSplits, msg)
-		if err := createInitialSplits(ctx, codec, splitter, planner.initialTopology, details.DestinationTenantID); err != nil {
+		if err := createInitialSplits(ctx, codec, splitter, planner.initialTopology, len(planner.initialDestinationNodes), details.DestinationTenantID); err != nil {
 			return err
 		}
 	} else {
@@ -244,37 +244,13 @@ func startDistIngestion(
 	return err
 }
 
-type partitionedSpans struct {
-	spans []roachpb.Span
-}
-
-var _ sort.Interface = &partitionedSpans{}
-
-func (s partitionedSpans) Len() int {
-	return len(s.spans)
-}
-
-func (s partitionedSpans) Less(i, j int) bool {
-	return s.spans[i].Key.Compare(s.spans[j].Key) < 0
-}
-
-func (s partitionedSpans) Swap(i, j int) {
-	s.spans[i], s.spans[j] = s.spans[j], s.spans[i]
-}
-
-func newPartitionedSpans() partitionedSpans {
-	newPSpan := partitionedSpans{}
-	newPSpan.spans = make([]roachpb.Span, 0)
-	return newPSpan
-}
-
 func sortSpans(partitions []streamclient.PartitionInfo) roachpb.Spans {
-	pSpans := newPartitionedSpans()
+	spansToSort := make(roachpb.Spans, 0)
 	for i := range partitions {
-		pSpans.spans = append(pSpans.spans, partitions[i].Spans...)
+		spansToSort = append(spansToSort, partitions[i].Spans...)
 	}
-	sort.Sort(pSpans)
-	return pSpans.spans
+	sort.Sort(spansToSort)
+	return spansToSort
 }
 
 // TODO(ssd): This is a duplicative with the split_and_scatter processor in
@@ -333,6 +309,7 @@ func createInitialSplits(
 	codec keys.SQLCodec,
 	splitter splitAndScatterer,
 	topology streamclient.Topology,
+	destNodeCount int,
 	destTenantID roachpb.TenantID,
 ) error {
 	ctx, sp := tracing.ChildSpan(ctx, "streamingest.createInitialSplits")
@@ -351,11 +328,7 @@ func createInitialSplits(
 
 	grp := ctxgroup.WithContext(ctx)
 	sortedSpans := sortSpans(topology.Partitions)
-	// Set the number of split workers to the number of partitions (i.e. src node count).
-	splitWorkers := len(topology.Partitions)
-	if splitWorkers > len(sortedSpans) {
-		return errors.AssertionFailedf("There are more partitions than partition spans")
-	}
+	splitWorkers := destNodeCount
 	spansPerWorker := len(sortedSpans) / splitWorkers
 	for i := 0; i < splitWorkers; i++ {
 		startIdx := i * spansPerWorker
@@ -467,8 +440,9 @@ type replicationFlowPlanner struct {
 
 	initialPlanCtx *sql.PlanningCtx
 
-	initialStreamAddresses []string
-	initialTopology        streamclient.Topology
+	initialStreamAddresses  []string
+	initialTopology         streamclient.Topology
+	initialDestinationNodes []base.SQLInstanceID
 
 	srcTenantID roachpb.TenantID
 }
@@ -501,16 +475,18 @@ func (p *replicationFlowPlanner) constructPlanGenerator(
 		if err != nil {
 			return nil, nil, err
 		}
-		if !p.createdInitialPlan() {
-			p.initialTopology = topology
-			p.initialStreamAddresses = topology.StreamAddresses()
-		}
 
 		p.srcTenantID = topology.SourceTenantID
 
 		planCtx, sqlInstanceIDs, err := dsp.SetupAllNodesPlanning(ctx, execCtx.ExtendedEvalContext(), execCtx.ExecCfg())
 		if err != nil {
 			return nil, nil, err
+		}
+		if !p.createdInitialPlan() {
+			p.initialTopology = topology
+			p.initialStreamAddresses = topology.StreamAddresses()
+			p.initialDestinationNodes = sqlInstanceIDs
+
 		}
 		destNodeLocalities, err := getDestNodeLocalities(ctx, dsp, sqlInstanceIDs)
 		if err != nil {
