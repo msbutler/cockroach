@@ -2590,13 +2590,13 @@ func (s *Store) VisitReplicas(visitor func(*Replica) (wantMore bool), opts ...Vi
 	v.Visit(visitor)
 }
 
-// visitReplicasByKey invokes the visitor on all the replicas for ranges that
+// VisitReplicasByKey invokes the visitor on all the replicas for ranges that
 // overlap [startKey, endKey), or until the visitor returns false. Replicas are
 // visited in key order, with `s.mu` held. Placeholders are not visited.
 //
 // Visited replicas might be IsDestroyed(); if the visitor cares, it needs to
 // protect against it itself.
-func (s *Store) visitReplicasByKey(
+func (s *Store) VisitReplicasByKey(
 	ctx context.Context,
 	startKey, endKey roachpb.RKey,
 	order IterationOrder,

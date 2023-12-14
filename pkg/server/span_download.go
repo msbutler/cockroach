@@ -91,6 +91,47 @@ func (s *systemStatusServer) localDownloadSpan(
 			defer close(spanCh)
 			ctxDone := ctx.Done()
 
+			ids := make([]roachpb.RangeID, 0, store.ReplicaCount())
+			for _, reqSpan := range req.Spans {
+				if err := store.VisitReplicasByKey(ctx,
+					roachpb.RKey(reqSpan.Key), roachpb.RKey(reqSpan.EndKey), kvserver.AscendingKeyOrder,
+					func(ctx context.Context, r *kvserver.Replica) error {
+						ids = append(ids, r.RangeID)
+						return nil
+					},
+				); err != nil {
+					return err
+				}
+
+				var downloadSpan roachpb.Span
+				for _, id := range ids {
+					r := store.GetReplicaIfExists(id)
+					if r == nil {
+						continue
+					}
+					if !r.OwnsValidLease(ctx, s.clock.NowAsClockTimestamp()) {
+						continue
+					}
+					sp := r.Desc().KeySpan().AsRawSpanWithNoLocals().Intersect(reqSpan)
+
+					if downloadSpan.EndKey.Equal(sp.Key) {
+						downloadSpan.EndKey = sp.EndKey
+						continue
+					}
+					if len(downloadSpan.Key) > 0 {
+						spanCh <- downloadSpan
+					}
+					downloadSpan = sp
+				}
+				if len(downloadSpan.Key) > 0 {
+					select {
+					case spanCh <- downloadSpan:
+					case <-ctxDone:
+						return ctx.Err()
+					}
+				}
+			}
+
 			for _, sp := range req.Spans {
 				select {
 				case spanCh <- sp:

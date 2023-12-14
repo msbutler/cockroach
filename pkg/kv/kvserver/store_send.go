@@ -241,7 +241,7 @@ func (s *Store) SendWithWriteBytes(
 				endKey = rSpan.EndKey
 			}
 			var ris []roachpb.RangeInfo
-			if err := s.visitReplicasByKey(ctx, startKey, endKey, AscendingKeyOrder, func(ctx context.Context, repl *Replica) error {
+			if err := s.VisitReplicasByKey(ctx, startKey, endKey, AscendingKeyOrder, func(ctx context.Context, repl *Replica) error {
 				// Note that we return the lease even if it's expired. The kvclient can use it as it sees fit.
 				ri := repl.GetRangeInfo(ctx)
 				if ri.Desc.RangeID == skipRID {
