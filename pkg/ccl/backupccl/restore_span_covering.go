@@ -305,10 +305,12 @@ func generateAndSendImportSpans(
 	var lastCovSpan roachpb.Span
 	var covFilesByLayer [][]*backuppb.BackupManifest_File
 	var firstInSpan bool
+	var nexSpanStartKey roachpb.Key
 
 	flush := func(ctx context.Context) error {
 		entry := execinfrapb.RestoreSpanEntry{
-			Span: lastCovSpan,
+			Span:        lastCovSpan,
+			EndSplitKey: nexSpanStartKey,
 		}
 		for layer := range covFilesByLayer {
 			for _, f := range covFilesByLayer[layer] {

@@ -346,6 +346,7 @@ message RestoreSpanEntry {
   optional roachpb.Span span = 1 [(gogoproto.nullable) = false];
   repeated RestoreFileSpec files = 2 [(gogoproto.nullable) = false];
   optional int64 progressIdx = 3 [(gogoproto.nullable) = false];
+  optional bytes EndSplitKey = 4 [(gogoproto.casttype) = "Key",(gogoproto.nullable) = false];
 }
 
 message RestoreDataSpec {
