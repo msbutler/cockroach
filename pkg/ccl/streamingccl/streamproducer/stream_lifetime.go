@@ -59,12 +59,12 @@ func jobIsNotRunningError(id jobspb.JobID, status jobs.Status, op string) error 
 	)
 }
 
-// startReplicationProducerJob initializes a replication stream producer job on
+// StartReplicationProducerJob initializes a replication stream producer job on
 // the source cluster that:
 //
 // 1. Tracks the liveness of the replication stream consumption.
 // 2. Updates the protected timestamp for spans being replicated.
-func startReplicationProducerJob(
+func StartReplicationProducerJob(
 	ctx context.Context,
 	evalCtx *eval.Context,
 	txn isql.Txn,
