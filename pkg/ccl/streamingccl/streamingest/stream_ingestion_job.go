@@ -27,12 +27,11 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
-	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/eval"
 	bulkutil "github.com/cockroachdb/cockroach/pkg/util/bulk"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metric"
-	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
@@ -120,8 +119,10 @@ func completeIngestion(
 		details.StreamID)
 	updateRunningStatus(ctx, ingestionJob, jobspb.ReplicationCuttingOver, msg)
 	completeProducerJob(ctx, ingestionJob, execCtx.ExecCfg().InternalDB, true)
-	if err := startPostCutoverRetentionJob(ctx, execCtx.ExecCfg(), details, cutoverTimestamp); err != nil {
+
+	if err := startPostCutoverRetentionJob(ctx, execCtx.ExecCfg(), details, execCtx.ExtendedEvalContext().StreamManagerFactory, cutoverTimestamp); err != nil {
 		log.Warningf(ctx, "failed to begin post cutover retention job: %s", err.Error())
+		panic(err.Error())
 	}
 
 	// Now that we have completed the cutover we can release the protected
@@ -175,8 +176,15 @@ func startPostCutoverRetentionJob(
 	ctx context.Context,
 	execCfg *sql.ExecutorConfig,
 	details jobspb.StreamIngestionDetails,
+	streamFactory eval.StreamManagerFactory,
 	cutoverTime hlc.Timestamp,
 ) error {
+
+	mgr, err := streamFactory.GetReplicationStreamManager(ctx)
+	if err != nil {
+		return err
+	}
+
 	var tenantName roachpb.TenantName
 	if err := execCfg.InternalDB.Txn(ctx, func(ctx context.Context, txn isql.Txn) error {
 		info, err := sql.GetTenantRecordByID(ctx, txn, details.DestinationTenantID, execCfg.Settings)
@@ -188,12 +196,7 @@ func startPostCutoverRetentionJob(
 	req := streampb.ReplicationProducerRequest{
 		ReplicationStartTime: cutoverTime,
 	}
-	reqBytes, err := protoutil.Marshal(&req)
-	if err != nil {
-		return err
-	}
-	iExec := execCfg.InternalDB.Executor()
-	_, err = iExec.ExecEx(ctx, "dummy producer job", nil, sessiondata.NodeUserSessionDataOverride, `SELECT crdb_internal.start_replication_stream($1, $2)`, tenantName, reqBytes)
+	_, err = mgr.StartReplicationStream(ctx, tenantName, req)
 	return err
 }
 
