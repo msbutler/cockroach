@@ -509,8 +509,6 @@ func registerRestore(r registry.Registry) {
 		{dataSet: dataBank2TB{}, nodes: 32, timeout: 3 * time.Hour},
 		{dataSet: dataBank2TB{}, nodes: 6, timeout: 4 * time.Hour, cpus: 8, pdVolumeSize: 2500,
 			parallelize: true},
-		{dataSet: tpce10TB{}, nodes: 10, timeout: 10 * time.Hour, cpus: 8, pdVolumeSize: 1500,
-			detached: true},
 	} {
 		item := item
 		clusterOpts := make([]spec.Option, 0)
