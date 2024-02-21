@@ -13,6 +13,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/streamingccl/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
 
 // mergedSubscription combines multiple subscriptions into a single
@@ -41,6 +42,7 @@ func mergeSubscriptions(
 				select {
 				case event, ok := <-sub.Events():
 					if !ok {
+						log.Infof(ctx,"a subscription ended with err %s",sub.Err())
 						return sub.Err()
 					}
 
