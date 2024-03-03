@@ -1362,10 +1362,8 @@ func restorePlanHook(
 		}
 	}
 
-	if restoreStmt.Options.ExperimentalOnline && !restoreStmt.Targets.TenantID.IsSet() {
-		// TODO(ssd): Disable this once it is less annoying to
-		// disable it in tests.
-		log.Warningf(ctx, "running non-tenant online RESTORE; this is dangerous and will only work if you know exactly what you are doing")
+	if restoreStmt.Options.ExperimentalOnline && (restoreStmt.Targets.TenantID.IsSet() || restoreStmt.Options.IncludeAllSecondaryTenants != nil) {
+		return nil, nil, nil, false, errors.New("cannot run Online Restore on a tenant")
 	}
 
 	var newTenantID *roachpb.TenantID
@@ -2077,12 +2075,6 @@ func doRestorePlan(
 		fromDescription = [][]string{fullyResolvedBaseDirectory}
 	} else {
 		fromDescription = from
-	}
-
-	if restoreStmt.Options.ExperimentalOnline {
-		if err := checkRewritesAreNoops(descriptorRewrites); err != nil {
-			return err
-		}
 	}
 
 	description, err := restoreJobDescription(
