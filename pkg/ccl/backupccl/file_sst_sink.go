@@ -104,6 +104,7 @@ func (s *fileSSTSink) flushFile(ctx context.Context) error {
 		Files:          s.flushedFiles,
 		CompletedSpans: s.completedSpans,
 	}
+	log.Infof(ctx, "sending progress update for flush with %d completed spans", progDetails.CompletedSpans)
 	var prog execinfrapb.RemoteProducerMetadata_BulkProcessorProgress
 	details, err := gogotypes.MarshalAny(&progDetails)
 	if err != nil {

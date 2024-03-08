@@ -11,6 +11,7 @@ package backupccl
 import (
 	"context"
 	"fmt"
+	protypes "github.com/gogo/protobuf/types"
 	"io"
 	"time"
 
@@ -215,10 +216,19 @@ func (bp *backupDataProcessor) Next() (rowenc.EncDatumRow, *execinfrapb.Producer
 		return nil, bp.DrainHelper()
 	}
 
+	helper := func(p execinfrapb.RemoteProducerMetadata_BulkProcessorProgress) {
+		var progDetails backuppb.BackupManifest_Progress
+		if err := protypes.UnmarshalAny(&p.ProgressDetails, &progDetails); err != nil {
+			log.Warningf(bp.Ctx(), "unable to unmarshal backup progress details: %+v", err)
+		}
+		log.Infof(bp.Ctx(), "Sending prog update %d", p.CompletedSpans)
+	}
+
 	for prog := range bp.progCh {
 		// Take a copy so that we can send the progress address to the output
 		// processor.
 		p := prog
+		helper(p)
 		return nil, &execinfrapb.ProducerMetadata{BulkProcessorProgress: &p}
 	}
 
@@ -273,6 +283,7 @@ func runBackupProcessor(
 	clusterSettings := flowCtx.Cfg.Settings
 
 	totalSpans := len(spec.Spans) + len(spec.IntroducedSpans)
+	log.Infof(ctx, "about to process %d spans", totalSpans)
 	requestSpans := make([]spanAndTime, 0, totalSpans)
 	rangeSizedSpans := preSplitExports.Get(&flowCtx.EvalCtx.Settings.SV)
 
@@ -414,6 +425,7 @@ func runBackupProcessor(
 		defer timer.Stop()
 
 		ctxDone := ctx.Done()
+		var completedSpanCount int32
 		for {
 			select {
 			case <-ctxDone:
@@ -619,6 +631,7 @@ func runBackupProcessor(
 							if i == len(resp.Files)-1 {
 								ret.completedSpans = completedSpans
 							}
+							completedSpanCount += ret.completedSpans
 
 							if err := sink.write(ctx, ret); err != nil {
 								return err
@@ -634,6 +647,7 @@ func runBackupProcessor(
 				// still be running and may still push new work (a retry) on to todo but
 				// that is OK, since that also means it is still running and thus can
 				// pick up that work on its next iteration.
+				log.Infof(ctx, "completed spans count %d", completedSpanCount)
 				return sink.flush(ctx)
 			}
 		}

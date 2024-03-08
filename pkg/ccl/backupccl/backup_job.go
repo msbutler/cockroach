@@ -254,9 +254,12 @@ func backup(
 	}
 
 	numTotalSpans := 0
-	for _, spec := range backupSpecs {
+	for sqlID, spec := range backupSpecs {
+		log.Infof(ctx, "SQL ID %d, Introduced Spans: %d, Reg Spans %d", sqlID, spec.IntroducedSpans, spec.Spans)
 		numTotalSpans += len(spec.IntroducedSpans) + len(spec.Spans)
 	}
+
+	log.Infof(ctx, "Total Spans for checkpointing %d; logical spans %d", numTotalSpans, spans)
 
 	progressLogger := jobs.NewChunkProgressLogger(job, numTotalSpans, job.FractionCompleted(), jobs.ProgressUpdateOnly)
 
@@ -292,6 +295,7 @@ func backup(
 			}
 
 			// Signal that an ExportRequest finished to update job progress.
+			log.Infof(ctx, "Pushing Completed span count to progress %d", progDetails.CompletedSpans)
 			for i := int32(0); i < progDetails.CompletedSpans; i++ {
 				requestFinishedCh <- struct{}{}
 			}
