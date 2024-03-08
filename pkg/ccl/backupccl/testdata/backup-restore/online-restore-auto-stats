@@ -1,0 +1,52 @@
+# This test ensures that online restore restores the backed up auto stats
+# settings
+
+reset test-nodelocal
+----
+
+new-cluster name=s1 disable-tenant
+----
+
+exec-sql
+CREATE DATABASE d;
+USE d;
+CREATE TABLE reg (i INT PRIMARY KEY, s STRING);
+INSERT INTO reg VALUES (1, 'x'),(2,'y'),(3,'z');
+CREATE TABLE stats (i INT PRIMARY KEY, s STRING);
+CREATE TABLE nostats (i INT PRIMARY KEY, s STRING);
+ALTER TABLE stats SET (sql_stats_automatic_collection_enabled = true);
+ALTER TABLE nostats SET (sql_stats_automatic_collection_enabled = false);
+----
+
+exec-sql
+BACKUP INTO 'nodelocal://1/cluster/';
+----
+
+
+new-cluster name=s2 share-io-dir=s1 allow-implicit-access disable-tenant
+----
+
+
+exec-sql
+RESTORE DATABASE d FROM LATEST IN 'nodelocal://1/cluster/' with EXPERIMENTAL DEFERRED COPY;
+----
+
+# Wait for download job to complete
+
+query-sql retry
+SELECT count(*) FROM [SHOW JOBS] WHERE job_type='RESTORE' and status='succeeded';
+----
+2
+
+query
+SHOW CREATE TABLE d.reg
+----
+
+query
+SHOW CREATE TABLE d.stats
+----
+
+query
+SHOW CREATE TABLE d.nostats
+----
+

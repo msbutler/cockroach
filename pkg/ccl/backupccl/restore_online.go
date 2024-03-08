@@ -515,7 +515,12 @@ func (r *restoreResumer) cleanupAfterDownload(
 			if err != nil {
 				return err
 			}
-			newTableDesc.AutoStatsSettings = &catpb.AutoStatsSettings{}
+			// Setting the AutoStatsSetting field to nil implies the table will have
+			// the detault auto stats settings.
+			newTableDesc.AutoStatsSettings = nil
+			if enabled, ok := details.PostDownloadTableAutoStatsSettings[uint32(table.ID)]; ok {
+				newTableDesc.AutoStatsSettings = &catpb.AutoStatsSettings{Enabled: &enabled}
+			}
 			if err := descsCol.WriteDescToBatch(
 				ctx, false /* kvTrace */, newTableDesc, b); err != nil {
 				return err

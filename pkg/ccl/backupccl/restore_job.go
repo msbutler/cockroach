@@ -1867,6 +1867,15 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 	if err := insertStats(ctx, r.job, p.ExecCfg(), remappedStats); err != nil {
 		return errors.Wrap(err, "inserting table statistics")
 	}
+
+	tableAutoStatsSettings := make(map[uint32]bool, len(details.TableDescs))
+	if details.ExperimentalOnline {
+		for i := range details.TableDescs {
+			if details.TableDescs[i].AutoStatsSettings != nil && details.TableDescs[i].AutoStatsSettings.Enabled != nil {
+				tableAutoStatsSettings[uint32(details.TableDescs[i].ID)] = *details.TableDescs[i].AutoStatsSettings.Enabled
+			}
+		}
+	}
 	publishDescriptors := func(ctx context.Context, txn descs.Txn) (err error) {
 		return r.publishDescriptors(
 			ctx, p.ExecCfg().JobRegistry, p.ExecCfg().JobsKnobs(), txn, p.User(),
@@ -1925,7 +1934,7 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 	}
 
 	r.restoreStats = resTotal
-	if err := r.maybeWriteDownloadJob(ctx, p.ExecCfg(), preData, mainData); err != nil {
+	if err := r.maybeWriteDownloadJob(ctx, p.ExecCfg(), preData, mainData, tableAutoStatsSettings); err != nil {
 		return err
 	}
 
@@ -1981,6 +1990,7 @@ func (r *restoreResumer) maybeWriteDownloadJob(
 	execConfig *sql.ExecutorConfig,
 	preRestoreData *restorationDataBase,
 	mainRestoreData *mainRestorationData,
+	autoStatsSettings map[uint32]bool,
 ) error {
 	details := r.job.Details().(jobspb.RestoreDetails)
 	if !details.ExperimentalOnline {
@@ -1998,8 +2008,12 @@ func (r *restoreResumer) maybeWriteDownloadJob(
 	downloadJobRecord := jobs.Record{
 		Description: fmt.Sprintf("Background Data Download for %s", r.job.Payload().Description),
 		Username:    r.job.Payload().UsernameProto.Decode(),
-		Details:     jobspb.RestoreDetails{DownloadSpans: downloadSpans, TableDescs: details.TableDescs},
-		Progress:    jobspb.RestoreProgress{},
+		Details: jobspb.RestoreDetails{
+			DownloadSpans:                      downloadSpans,
+			PostDownloadTableAutoStatsSettings: autoStatsSettings,
+			TableDescs:                         details.TableDescs,
+		},
+		Progress: jobspb.RestoreProgress{},
 	}
 
 	return execConfig.InternalDB.DescsTxn(ctx, func(
