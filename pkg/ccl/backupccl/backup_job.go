@@ -225,6 +225,7 @@ func backup(
 	for _, spec := range backupSpecs {
 		numTotalSpans += len(spec.IntroducedSpans) + len(spec.Spans)
 	}
+	log.Infof(ctx, "Total Spans for checkpointing %d; logical spans %d", numTotalSpans, spans)
 
 	progressLogger := jobs.NewChunkProgressLogger(job, numTotalSpans, job.FractionCompleted(), jobs.ProgressUpdateOnly)
 

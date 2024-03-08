@@ -440,6 +440,8 @@ func runBackupProcessor(
 		timer := timeutil.NewTimer()
 		defer timer.Stop()
 
+		var completedSpanCount int32
+
 		ctxDone := ctx.Done()
 		for {
 			select {
@@ -594,12 +596,13 @@ func runBackupProcessor(
 							resumeTS = resp.Files[fileCount-1].EndKeyTS
 						}
 						resumeSpan = spanAndTime{
-							span:       *resp.ResumeSpan,
-							firstKeyTS: resumeTS,
-							start:      span.start,
-							end:        span.end,
-							attempts:   span.attempts,
-							lastTried:  span.lastTried,
+							span:         *resp.ResumeSpan,
+							firstKeyTS:   resumeTS,
+							start:        span.start,
+							end:          span.end,
+							attempts:     span.attempts,
+							lastTried:    span.lastTried,
+							finishesSpec: span.finishesSpec,
 						}
 					}
 
@@ -648,6 +651,7 @@ func runBackupProcessor(
 						if i == len(resp.Files)-1 {
 							ret.completedSpans = completedSpans
 						}
+						completedSpanCount += ret.completedSpans
 
 						if err := sink.write(ctx, ret); err != nil {
 							return err
@@ -658,6 +662,7 @@ func runBackupProcessor(
 					span = resumeSpan
 				}
 			default:
+				log.Infof(ctx, "completed spans count %d", completedSpanCount)
 				// No work left to do, so we can exit. Note that another worker could
 				// still be running and may still push new work (a retry) on to todo but
 				// that is OK, since that also means it is still running and thus can
