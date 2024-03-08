@@ -242,6 +242,8 @@ func backup(
 		numTotalSpans += len(spec.IntroducedSpans) + len(spec.Spans)
 	}
 
+	log.Infof(ctx, "Total Spans for checkpointing %d; logical spans %d", numTotalSpans, spans)
+
 	progressLogger := jobs.NewChunkProgressLogger(job, numTotalSpans, job.FractionCompleted(), jobs.ProgressUpdateOnly)
 
 	requestFinishedCh := make(chan struct{}, numTotalSpans) // enough buffer to never block
@@ -297,6 +299,7 @@ func backup(
 			}
 
 			// Signal that an ExportRequest finished to update job progress.
+			log.Infof(ctx, "Pushing Completed span count to progress %d", progDetails.CompletedSpans)
 			for i := int32(0); i < progDetails.CompletedSpans; i++ {
 				requestFinishedCh <- struct{}{}
 				if execCtx.ExecCfg().TestingKnobs.AfterBackupChunk != nil {
