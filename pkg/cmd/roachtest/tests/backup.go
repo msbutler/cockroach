@@ -325,7 +325,7 @@ func registerBackup(r registry.Registry) {
 		Suites:            registry.Suites(registry.Nightly),
 		EncryptionSupport: registry.EncryptionAlwaysDisabled,
 		Run: func(ctx context.Context, t test.Test, c cluster.Cluster) {
-			rows := rows2TiB
+			rows := rows100GiB
 			if c.IsLocal() {
 				rows = 100
 			}
@@ -339,8 +339,16 @@ func registerBackup(r registry.Registry) {
 				// total elapsed time. This is used by roachperf to compute and display
 				// the average MB/sec per node.
 				tick()
-				c.Run(ctx, option.WithNodes(c.Node(1)), `./cockroach sql --url={pgurl:1} -e "
-				BACKUP bank.bank TO 'gs://`+backupTestingBucket+`/`+dest+`?AUTH=implicit'"`)
+				conn := c.Conn(ctx, t.L(), 1)
+				defer conn.Close()
+				var jobID jobspb.JobID
+				uri := `gs://` + backupTestingBucket + `/` + dest + `?AUTH=implicit`
+				if err := conn.QueryRowContext(ctx, fmt.Sprintf("BACKUP bank.bank INTO '%s' WITH detached", uri)).Scan(&jobID); err != nil {
+					return err
+				}
+				if err := AssertReasonableFractionCompleted(ctx, t.L(), c, jobID, 2); err != nil {
+					return err
+				}
 				tick()
 
 				// Upload the perf artifacts to any one of the nodes so that the test
