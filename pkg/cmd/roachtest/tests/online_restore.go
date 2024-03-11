@@ -70,7 +70,7 @@ func registerOnlineRestore(r registry.Registry) {
 		{
 			// 400GB tpce Online Restore
 			hardware:               makeHardwareSpecs(hardwareSpecs{ebsThroughput: 1000 /* MB/s */, workloadNode: true}),
-			backup:                 makeRestoringBackupSpecs(backupSpecs{nonRevisionHistory: true, version: "v23.1.11"}),
+			backup:                 makeRestoringBackupSpecs(backupSpecs{nonRevisionHistory: true, version: fixtureFromMasterVersion}),
 			timeout:                1 * time.Hour,
 			suites:                 registry.Suites(registry.Nightly),
 			restoreUptoIncremental: 1,
@@ -81,7 +81,7 @@ func registerOnlineRestore(r registry.Registry) {
 				ebsThroughput: 1000 /* MB/s */, workloadNode: true}),
 			backup: makeRestoringBackupSpecs(backupSpecs{
 				nonRevisionHistory: true,
-				version:            "v23.1.11",
+				version:            fixtureFromMasterVersion,
 				workload:           tpceRestore{customers: 500000}}),
 			timeout:                5 * time.Hour,
 			suites:                 registry.Suites(registry.Nightly),
