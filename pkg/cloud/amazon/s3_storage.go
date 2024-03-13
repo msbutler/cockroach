@@ -564,7 +564,6 @@ func newClient(
 		addLoadOption(config.WithCredentialsProvider(
 			aws.NewCredentialsCache(credentials.NewStaticCredentialsProvider(conf.accessKey, conf.secret, conf.tempToken))))
 	case cloud.AuthParamImplicit:
-		addLoadOption(config.WithSharedConfigProfile(config.DefaultSharedConfigProfile))
 	}
 
 	cfg, err := config.LoadDefaultConfig(ctx, loadOptions...)
