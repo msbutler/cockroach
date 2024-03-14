@@ -234,7 +234,7 @@ func clientConfig(conf *cloudpb.ExternalStorage_S3) s3ClientConfig {
 		secret:                conf.Secret,
 		tempToken:             conf.TempToken,
 		auth:                  conf.Auth,
-		verbose:               log.V(2),
+		verbose:               true,
 		assumeRoleProvider:    assumeRoleProvider,
 		delegateRoleProviders: delegateRoleProviders,
 	}
@@ -497,7 +497,7 @@ func newLogAdapter(ctx context.Context) *awsLogAdapter {
 	}
 }
 
-var awsVerboseLogging = aws.LogRequestEventMessage | aws.LogResponseEventMessage | aws.LogRetries
+var awsVerboseLogging = aws.LogRequestEventMessage | aws.LogResponseEventMessage | aws.LogRetries | aws.LogSigning
 
 func constructEndpointURI(endpoint string) (string, error) {
 	parsedURL, err := url.Parse(endpoint)
