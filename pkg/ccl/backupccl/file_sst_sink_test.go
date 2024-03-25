@@ -27,6 +27,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings/cluster"
 	"github.com/cockroachdb/cockroach/pkg/sql/execinfrapb"
 	"github.com/cockroachdb/cockroach/pkg/storage"
+	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -589,8 +590,8 @@ func TestFileSSTSinkCopyPointKeys(t *testing.T) {
 					input.input[i].key = string(s2k(input.input[i].key))
 					v := roachpb.Value{}
 					v.SetBytes(input.input[i].value)
-
 					input.input[i].value = v.RawBytes
+					input.input[i].importEpoch = 
 				}
 				expected = append(expected, input.input...)
 
@@ -813,6 +814,7 @@ func TestFileSSTSinkCopyRangeKeys(t *testing.T) {
 type kvAndTS struct {
 	key       string
 	value     []byte
+	importEpoch int
 	timestamp int64
 }
 
@@ -890,10 +892,12 @@ func (b *exportedSpanBuilder) build() exportedSpan {
 		v := roachpb.Value{}
 		v.SetBytes(d.value)
 		v.InitChecksum(nil)
-		err := sst.Put(storage.MVCCKey{
+		mvccValue := storage.MVCCValue{Value: v}
+		mvccValue.ImportEpoch = uint32(d.importEpoch)
+		err := sst.PutMVCC(storage.MVCCKey{
 			Key:       s2k(d.key),
 			Timestamp: hlc.Timestamp{WallTime: d.timestamp},
-		}, v.RawBytes)
+		}, mvccValue)
 		if err != nil {
 			panic(err)
 		}
