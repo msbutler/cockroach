@@ -351,6 +351,13 @@ func (r *AddSSTableRequest) WriteBytes() int64 {
 	return int64(len(r.Data))
 }
 
+var _ SizedWriteRequest = (*LinkExternalSSTableRequest)(nil)
+
+// WriteBytes makes LinkExternalSSTableRequest implement SizedWriteRequest.
+func (r *LinkExternalSSTableRequest) WriteBytes() int64 {
+	return int64(r.Size())
+}
+
 // Response is an interface for RPC responses.
 type Response interface {
 	protoutil.Message
