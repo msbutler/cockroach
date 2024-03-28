@@ -73,6 +73,7 @@ func registerOnlineRestore(r registry.Registry) {
 			backup:                 makeRestoringBackupSpecs(backupSpecs{nonRevisionHistory: true, version: fixtureFromMasterVersion, numBackupsInChain: 5}),
 			timeout:                1 * time.Hour,
 			suites:                 registry.Suites(registry.Nightly),
+			linkPhaseTimeout:       3 * time.Minute,
 			restoreUptoIncremental: 1,
 		},
 		{
@@ -183,7 +184,14 @@ func registerOnlineRestore(r registry.Registry) {
 								return nil
 							})
 							m.Wait()
+							firstRestoreDuration := timeutil.Since(restoreStartTime)
+							t.L().Printf("first restore took %.2f minutes", firstRestoreDuration.Minutes())
 
+							if sp.linkPhaseTimeout > 0 && runOnline {
+								if firstRestoreDuration > sp.linkPhaseTimeout {
+									t.Fatalf("link phase took %.2f minutes, which is longer than the configured timeout of %.2f minutes", firstRestoreDuration.Minutes(), sp.linkPhaseTimeout.Minutes())
+								}
+							}
 							workloadCtx, workloadCancel := context.WithCancel(ctx)
 							mDownload := c.NewMonitor(workloadCtx, sp.hardware.getCRDBNodes())
 

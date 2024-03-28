@@ -815,6 +815,8 @@ type restoreSpecs struct {
 
 	// testname is set automatically.
 	testName string
+
+	linkPhaseTimeout time.Duration
 }
 
 func (sp *restoreSpecs) initTestName() {
