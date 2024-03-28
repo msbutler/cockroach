@@ -226,7 +226,7 @@ func registerOnlineRestore(r registry.Registry) {
 									// Run the workload for at most 10 minutes.
 									testRuntime := timeutil.Since(testStartTime)
 									workloadDuration := sp.timeout - (testRuntime + time.Minute)
-									maxWorkloadDuration := time.Minute * 10
+									maxWorkloadDuration := time.Minute * 1
 									if workloadDuration > maxWorkloadDuration {
 										workloadDuration = maxWorkloadDuration
 									}
