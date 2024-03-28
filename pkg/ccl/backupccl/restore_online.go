@@ -194,6 +194,7 @@ func sendAddRemoteSSTWorker(
 					restoringSubspan, file.Path, file.BackupFileEntrySpan, entry.Span)
 				file.BackupFileEntrySpan = restoringSubspan
 				if !firstSplitDone {
+					log.Infof(ctx,"init split at %s",restoringSubspan.Key)
 					if err := sendSplitAt(ctx, execCtx, restoringSubspan.Key); err != nil {
 						log.Warningf(ctx, "failed to split during experimental restore: %v", err)
 					}

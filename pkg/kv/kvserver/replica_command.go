@@ -461,6 +461,10 @@ func (r *Replica) adminSplitWithDescriptor(
 
 	log.Infof(ctx, "initiating a split of this range at key %v [r%d] (%s)%s",
 		splitKey, rightRangeID, reason, extra)
+	stats := r.GetMVCCStats()
+	if stats.LiveBytes > 0 {
+			log.Warningf(ctx, "this range is non empty. Contains estimates %d",stats.ContainsEstimates)
+		}
 
 	leftDesc, rightDesc := prepareSplitDescs(rightRangeID, splitKey, args.ExpirationTime, desc)
 
