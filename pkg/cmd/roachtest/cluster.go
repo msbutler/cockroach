@@ -1366,11 +1366,11 @@ func (c *clusterImpl) FetchDebugZip(
 			//
 			// Ignore the files in the log directory; we pull the logs separately anyway
 			// so this would only cause duplication.
-			excludeFiles := "*.log,*.txt,*.pprof"
+			//excludeFiles := "*.log,*.txt,*.pprof"
 
 			cmd := roachtestutil.NewCommand("%s debug zip", test.DefaultCockroachPath).
 				Option("include-range-info").
-				Flag("exclude-files", fmt.Sprintf("'%s'", excludeFiles)).
+				//Flag("exclude-files", fmt.Sprintf("'%s'", excludeFiles)).
 				Flag("url", fmt.Sprintf("'%s'", nodePgUrl[0])).
 				MaybeFlag(c.IsSecure(), "certs-dir", install.CockroachNodeCertsDir).
 				Arg(zipName).

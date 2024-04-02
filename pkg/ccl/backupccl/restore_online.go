@@ -32,8 +32,10 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/ctxgroup"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/interval"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
@@ -87,9 +89,11 @@ func sendAddRemoteSSTs(
 
 	fromSystemTenant := isFromSystemTenant(dataToRestore.getTenantRekeys())
 
+	spanTracker := newSpanTracker()
+
 	restoreWorkers := int(onlineRestoreLinkWorkers.Get(&execCtx.ExecCfg().Settings.SV))
 	for i := 0; i < restoreWorkers; i++ {
-		grp.GoCtx(sendAddRemoteSSTWorker(execCtx, restoreSpanEntriesCh, requestFinishedCh, kr, fromSystemTenant))
+		grp.GoCtx(sendAddRemoteSSTWorker(execCtx, restoreSpanEntriesCh, requestFinishedCh, kr, spanTracker, fromSystemTenant))
 	}
 
 	if err := grp.Wait(); err != nil {
@@ -136,11 +140,36 @@ func rewriteSpan(
 	return span, nil
 }
 
+type spanTracker struct {
+	syncutil.Mutex
+	spans interval.Tree
+}
+
+func newSpanTracker() *spanTracker {
+	return &spanTracker{
+		spans: interval.NewTree(interval.ExclusiveOverlapper),
+	}
+}
+
+func (t *spanTracker) add(span roachpb.Span) error {
+	t.Lock()
+	defer t.Unlock()
+	var existingSpan interval.Range
+	if t.spans.DoMatching(func(i interval.Interface) (done bool) {
+		existingSpan = i.Range()
+		return true
+	}, span.AsRange()) {
+		return errors.Newf("span %s intersects with %s", span, existingSpan)
+	}
+	return t.spans.Insert(intervalSpan(span), false)
+}
+
 func sendAddRemoteSSTWorker(
 	execCtx sql.JobExecContext,
 	restoreSpanEntriesCh <-chan execinfrapb.RestoreSpanEntry,
 	requestFinishedCh chan<- struct{},
 	kr *KeyRewriter,
+	tracker *spanTracker,
 	fromSystemTenant bool,
 ) func(context.Context) error {
 	return func(ctx context.Context) error {
@@ -157,6 +186,7 @@ func sendAddRemoteSSTWorker(
 			if len(splitAt) > 0 {
 				if err := sendSplitAt(ctx, execCtx, splitAt); err != nil {
 					log.Warningf(ctx, "failed to split during experimental restore: %v", err)
+					return err
 				}
 			}
 
@@ -190,11 +220,17 @@ func sendAddRemoteSSTWorker(
 				if err != nil {
 					return err
 				}
+
+				if err := tracker.add(restoringSubspan); err != nil {
+					log.Warningf(ctx, "failed to add span %s to span tracker: %v", restoringSubspan, err)
+					return err
+				}
+
 				log.Infof(ctx, "experimental restore: sending span %s of file %s (file span: %s) as part of restore span (old key space) %s",
 					restoringSubspan, file.Path, file.BackupFileEntrySpan, entry.Span)
 				file.BackupFileEntrySpan = restoringSubspan
 				if !firstSplitDone {
-					log.Infof(ctx,"init split at %s",restoringSubspan.Key)
+					log.Infof(ctx, "init split at %s", restoringSubspan.Key)
 					if err := sendSplitAt(ctx, execCtx, restoringSubspan.Key); err != nil {
 						log.Warningf(ctx, "failed to split during experimental restore: %v", err)
 					}
@@ -243,7 +279,7 @@ func sendSplitAt(ctx context.Context, execCtx sql.JobExecContext, splitKey roach
 	ctx, sp := tracing.ChildSpan(ctx, "backupccl.sendSplitAt")
 	defer sp.Finish()
 
-	expiration := execCtx.ExecCfg().Clock.Now().AddDuration(time.Hour)
+	expiration := execCtx.ExecCfg().Clock.Now().AddDuration(time.Hour).AddDuration(time.Minute)
 	return execCtx.ExecCfg().DB.AdminSplit(ctx, splitKey, expiration)
 }
 

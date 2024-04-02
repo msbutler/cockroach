@@ -183,6 +183,9 @@ func registerOnlineRestore(r registry.Registry) {
 								return nil
 							})
 							m.Wait()
+							if err := rd.c.FetchDebugZip(ctx, rd.t.L(), "split_debug.zip", sp.hardware.getCRDBNodes()); err != nil {
+								t.Fatalf(err.Error())
+							}
 
 							workloadCtx, workloadCancel := context.WithCancel(ctx)
 							mDownload := c.NewMonitor(workloadCtx, sp.hardware.getCRDBNodes())
