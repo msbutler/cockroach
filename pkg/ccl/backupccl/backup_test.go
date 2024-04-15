@@ -1572,7 +1572,6 @@ func TestRestoreRetryProcErr(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.WithIssue(t, 120874)
 	testutils.RunTrueAndFalse(t, "restore processor progress", func(t *testing.T, makeProgress bool) {
 		mu := struct {
 			syncutil.Mutex
