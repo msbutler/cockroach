@@ -46,6 +46,11 @@ var queriesThroughputAgg = clusterstats.AggQuery{
 	Tag:   "Queries over Time",
 }
 
+type onlineRestoreSpecs struct {
+	restoreSpecs
+	linkPhaseTimeout time.Duration
+}
+
 func registerOnlineRestore(r registry.Registry) {
 	// This driver creates a variety of roachtests to benchmark online restore
 	// performance with the prefix
@@ -54,39 +59,46 @@ func registerOnlineRestore(r registry.Registry) {
 	// corresponding roachtest that runs a conventional restore over the same
 	// cluster topology and workload in order to measure post restore query
 	// latency relative to online restore (prefix restore/control/*).
-	for _, sp := range []restoreSpecs{
+	for _, sp := range []onlineRestoreSpecs{
 		{
 			// 15GB tpce Online Restore
-			hardware: makeHardwareSpecs(hardwareSpecs{ebsThroughput: 250 /* MB/s */, workloadNode: true}),
-			backup: makeRestoringBackupSpecs(backupSpecs{
-				nonRevisionHistory: true,
-				version:            "v23.1.11",
-				workload:           tpceRestore{customers: 1000}}),
-			timeout:                30 * time.Minute,
-			suites:                 registry.Suites(registry.Nightly),
-			restoreUptoIncremental: 1,
-			skip:                   "used for ad hoc testing. NB this backup contains prefixes",
+			restoreSpecs: restoreSpecs{
+				hardware: makeHardwareSpecs(hardwareSpecs{ebsThroughput: 250 /* MB/s */, workloadNode: true}),
+				backup: makeRestoringBackupSpecs(backupSpecs{
+					nonRevisionHistory: true,
+					version:            "v23.1.11",
+					workload:           tpceRestore{customers: 1000}}),
+				timeout:                30 * time.Minute,
+				suites:                 registry.Suites(registry.Nightly),
+				restoreUptoIncremental: 1,
+				skip:                   "used for ad hoc testing. NB this backup contains prefixes",
+			},
 		},
 		{
-			// 400GB tpce Online Restore
-			hardware:               makeHardwareSpecs(hardwareSpecs{ebsThroughput: 1000 /* MB/s */, workloadNode: true}),
-			backup:                 makeRestoringBackupSpecs(backupSpecs{nonRevisionHistory: true, version: fixtureFromMasterVersion, numBackupsInChain: 5}),
-			timeout:                1 * time.Hour,
-			suites:                 registry.Suites(registry.Nightly),
-			restoreUptoIncremental: 1,
+			restoreSpecs: restoreSpecs{
+				// 400GB tpce Online Restore
+				hardware:               makeHardwareSpecs(hardwareSpecs{ebsThroughput: 1000 /* MB/s */, workloadNode: true}),
+				backup:                 makeRestoringBackupSpecs(backupSpecs{nonRevisionHistory: true, version: fixtureFromMasterVersion, numBackupsInChain: 5}),
+				timeout:                1 * time.Hour,
+				suites:                 registry.Suites(registry.Nightly),
+				restoreUptoIncremental: 1,
+			},
+			linkPhaseTimeout: 3 * time.Minute,
 		},
 		{
 			// 8TB tpce Online Restore
-			hardware: makeHardwareSpecs(hardwareSpecs{nodes: 10, volumeSize: 2000,
-				ebsThroughput: 1000 /* MB/s */, workloadNode: true}),
-			backup: makeRestoringBackupSpecs(backupSpecs{
-				nonRevisionHistory: true,
-				version:            fixtureFromMasterVersion,
-				workload:           tpceRestore{customers: 500000}}),
-			timeout:                5 * time.Hour,
-			suites:                 registry.Suites(registry.Nightly),
-			restoreUptoIncremental: 1,
-			skip:                   "used for ad hoc experiments",
+			restoreSpecs: restoreSpecs{
+				hardware: makeHardwareSpecs(hardwareSpecs{nodes: 10, volumeSize: 2000,
+					ebsThroughput: 1000 /* MB/s */, workloadNode: true}),
+				backup: makeRestoringBackupSpecs(backupSpecs{
+					nonRevisionHistory: true,
+					version:            fixtureFromMasterVersion,
+					workload:           tpceRestore{customers: 500000}}),
+				timeout:                5 * time.Hour,
+				suites:                 registry.Suites(registry.Nightly),
+				restoreUptoIncremental: 1,
+				skip:                   "used for ad hoc experiments",
+			},
 		},
 	} {
 		for _, runOnline := range []bool{true, false} {
@@ -129,7 +141,7 @@ func registerOnlineRestore(r registry.Registry) {
 
 							testStartTime := timeutil.Now()
 
-							rd := makeRestoreDriver(t, c, sp)
+							rd := makeRestoreDriver(t, c, sp.restoreSpecs)
 							rd.prepareCluster(ctx)
 
 							statsCollector, err := createStatCollector(ctx, rd)
@@ -183,6 +195,10 @@ func registerOnlineRestore(r registry.Registry) {
 								return nil
 							})
 							m.Wait()
+							if runOnline && sp.linkPhaseTimeout > 0 && timeutil.Now().Sub(restoreStartTime) > sp.linkPhaseTimeout {
+								t.Fatalf("online restore link phase took %.2f minutes, longer than timeout %.2f minutes",
+									timeutil.Since(restoreStartTime).Minutes(), sp.linkPhaseTimeout.Minutes())
+							}
 
 							workloadCtx, workloadCancel := context.WithCancel(ctx)
 							mDownload := c.NewMonitor(workloadCtx, sp.hardware.getCRDBNodes())
