@@ -183,6 +183,14 @@ func registerOnlineRestore(r registry.Registry) {
 								return nil
 							})
 							m.Wait()
+							if err := rd.c.FetchDebugZip(ctx, rd.t.L(), "split_debug.zip", sp.hardware.getCRDBNodes()); err != nil {
+								t.Fatalf(err.Error())
+							}
+							if runOnline && timeutil.Now().Sub(restoreStartTime) > 3*time.Minute {
+								t.Fatalf("link phase of restore took more than a minute")
+							} else if runOnline {
+								return
+							}
 
 							workloadCtx, workloadCancel := context.WithCancel(ctx)
 							mDownload := c.NewMonitor(workloadCtx, sp.hardware.getCRDBNodes())

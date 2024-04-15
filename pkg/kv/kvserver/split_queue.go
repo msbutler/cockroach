@@ -261,7 +261,7 @@ func (sq *splitQueue) processAttemptWithTracing(
 		exceededDuration := sq.logTracesThreshold > time.Duration(0) && processDuration > sq.logTracesThreshold
 
 		var traceOutput redact.RedactableString
-		traceLoggingNeeded := (err != nil || exceededDuration) && log.ExpensiveLogEnabled(ctx, 1)
+		traceLoggingNeeded := (err != nil || exceededDuration)
 		if traceLoggingNeeded {
 			// Add any trace filtering here if the output is too verbose.
 			rec := sp.GetConfiguredRecording()
