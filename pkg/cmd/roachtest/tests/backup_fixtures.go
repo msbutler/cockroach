@@ -277,6 +277,7 @@ func registerBackupFixtures(r registry.Registry) {
 				backupSpecs: backupSpecs{
 					version:            fixtureFromMasterVersion,
 					nonRevisionHistory: true,
+					numBackupsInChain: 4,
 				},
 			}),
 			timeout: 5 * time.Hour,
