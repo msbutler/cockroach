@@ -241,7 +241,16 @@ func (m *rangefeedMuxer) startSingleRangeFeed(
 		// Send metadata after the stream successfully registers to avoid sending
 		// metadata about a rangefeed that never starts.
 		fmt.Printf("send metadata %s-%s\n", span.Key, span.EndKey)
-		sendMetadata(m.eventCh, span, fromManualSplit)
+		m.eventCh <- RangeFeedMessage{
+			RangeFeedEvent: &kvpb.RangeFeedEvent{
+				Metadata: &kvpb.RangeFeedMetadata{
+					Span:            span,
+					FromManualSplit: fromManualSplit,
+				},
+			},
+			RegisteredSpan: span,
+		}
+		fmt.Printf("success sent metadata %s-%s\n", span.Key, span.EndKey)
 	}
 
 	return nil

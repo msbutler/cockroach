@@ -422,12 +422,15 @@ func (f *RangeFeed) processEvents(
 				if f.onMetadata == nil {
 					return errors.AssertionFailedf("received unexpected metadata event with no OnMetadata handler")
 				}
+				fmt.Printf("\treceived metadata event %s-%s\n", ev.Metadata.Span.Key, ev.Metadata.Span.EndKey)
 				f.onMetadata(ctx, ev.Metadata)
 			case ev.Error != nil:
 				// Intentionally do nothing, we'll get an error returned from the
 				// call to RangeFeed.
+				fmt.Printf("an error %v\n",ev.Error)
 			}
 		case <-ctx.Done():
+			fmt.Printf("donzo %v\n",ctx.Err())
 			return ctx.Err()
 		}
 	}
