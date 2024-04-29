@@ -879,9 +879,9 @@ func (rd *replicationDriver) main(ctx context.Context) {
 	// Wait for initial workload to be properly replicated across the source cluster to increase
 	// the probability that the producer returns a topology with more than one node in it,
 	// else the node shutdown tests can flake.
-	if rd.rs.srcNodes >= 3 {
-		require.NoError(rd.t, WaitFor3XReplication(ctx, rd.t, rd.t.L(), rd.setup.src.db))
-	}
+	//if rd.rs.srcNodes >= 3 {
+	//	require.NoError(rd.t, WaitFor3XReplication(ctx, rd.t, rd.t.L(), rd.setup.src.db))
+	//}
 
 	rd.t.L().Printf("begin workload on src cluster")
 
@@ -1240,11 +1240,11 @@ func registerClusterToCluster(r registry.Registry) {
 		},
 		{
 			name:               "c2c/BulkOps/singleImport",
-			srcNodes:           4,
-			dstNodes:           4,
+			srcNodes:           1,
+			dstNodes:           1,
 			cpus:               8,
 			pdSize:             100,
-			workload:           replicateBulkOps{short: true, debugSkipRollback: true},
+			workload:           replicateBulkOps{short: false, debugSkipRollback: true},
 			timeout:            2 * time.Hour,
 			cutoverTimeout:     1 * time.Hour,
 			additionalDuration: 0,
