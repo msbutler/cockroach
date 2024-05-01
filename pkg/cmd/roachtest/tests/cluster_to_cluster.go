@@ -235,6 +235,30 @@ func (tpcc replicateTPCC) runDriver(
 	return defaultWorkloadDriver(workloadCtx, setup, c, tpcc)
 }
 
+// replicateImportKV is a kv workload that runs the kv init step after the
+// replication stream has started, inducing a bulk import catchup scan workload.
+type replicateImportKV struct {
+	replicateKV
+	replicateSplits bool
+}
+
+func (ikv replicateImportKV) sourceInitCmd(tenantName string, nodes option.NodeListOption) string {
+	return ""
+}
+
+func (ikv replicateImportKV) sourceRunCmd(tenantName string, nodes option.NodeListOption) string {
+	return ikv.replicateKV.sourceInitCmd(tenantName, nodes)
+}
+
+func (ikv replicateImportKV) runDriver(
+	workloadCtx context.Context, c cluster.Cluster, t test.Test, setup *c2cSetup,
+) error {
+	if ikv.replicateSplits {
+		setup.dst.sysSQL.Exec(t, "SET CLUSTER SETTING physical_replication.consumer.ingest_split_event.enabled = true")
+	}
+	return defaultWorkloadDriver(workloadCtx, setup, c, ikv)
+}
+
 type replicateKV struct {
 	readPercent int
 
@@ -1167,6 +1191,56 @@ func registerClusterToCluster(r registry.Registry) {
 			suites:             registry.Suites(registry.Nightly),
 		},
 		{
+			// Catchup scan perf test on bulk import.
+			name:      "c2c/import/7tb/kv0",
+			benchmark: true,
+			srcNodes:  10,
+			dstNodes:  10,
+			cpus:      8,
+			// With the machine type and size we use, this is the smallest disk that
+			// gives us max write BW of 800MB/s.
+			pdSize: 3000,
+			// Write ~7TB data to disk.
+			workload: replicateImportKV{
+				replicateSplits: true,
+				replicateKV:     replicateKV{readPercent: 0, initRows: 5000000000, maxBlockBytes: 1024}},
+			timeout:            23 * time.Hour,
+			maxAcceptedLatency: 10 * time.Hour,
+			// Cutover to one second after the import completes.
+			cutover: -1 * time.Second,
+			// After the import completes, the replication stream should catch up in 5 minutes.
+			cutoverTimeout: 10 * time.Hour,
+			// because PCR begins on a nearly empty cluster, skip the node distribution check.
+			skipNodeDistributionCheck: true,
+			clouds:                    registry.AllExceptAWS,
+			suites:                    registry.Suites(registry.Weekly),
+		},
+		{
+			// Catchup scan perf test on bulk import.
+			name:      "c2c/import/kv0",
+			benchmark: true,
+			srcNodes:  5,
+			dstNodes:  5,
+			cpus:      8,
+			// With the machine type and size we use, this is the smallest disk that
+			// gives us max write BW of 800MB/s.
+			pdSize: 500,
+			// Write ~1.2TB data to disk.
+			workload: replicateImportKV{
+				replicateSplits: true,
+				replicateKV:     replicateKV{readPercent: 0, initRows: 1000000000, maxBlockBytes: 1024}},
+			timeout:            23 * time.Hour,
+			maxAcceptedLatency: 10 * time.Hour,
+			// Cutover to one second after the import completes.
+			cutover: -1 * time.Second,
+			// After the import completes, the replication stream should catch up in 5 minutes.
+			cutoverTimeout: 10 * time.Hour,
+			// because PCR begins on a nearly empty cluster, skip the node distribution check.
+			skipNodeDistributionCheck: true,
+			clouds:                    registry.AllExceptAWS,
+			suites:                    registry.Suites(registry.Weekly),
+		},
+		{
 			// Large workload to test our 23.2 perf goals.
 			name:      "c2c/weekly/kv50",
 			benchmark: true,
@@ -1763,7 +1837,10 @@ func destClusterSettings(t test.Test, db *sqlutils.SQLRunner, additionalDuration
 	db.ExecMultiple(t,
 		`SET CLUSTER SETTING kv.rangefeed.enabled = true;`,
 		`SET CLUSTER SETTING stream_replication.replan_flow_threshold = 0.1;`,
-		`SET CLUSTER SETTING physical_replication.consumer.node_lag_replanning_threshold = '5m';`)
+		`SET CLUSTER SETTING physical_replication.consumer.node_lag_replanning_threshold = '2m';`,
+		`SET CLUSTER SETTING stream_replication.replan_flow_frequency = '4m';`,
+		`SET CLUSTER SETTING server.debug.default_vmodule = 'node_lag_detector=2,stream_ingestion_frontier_processor=2';`,
+	)
 
 	if additionalDuration != 0 {
 		replanFrequency := additionalDuration / 2
