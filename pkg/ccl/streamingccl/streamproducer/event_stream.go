@@ -311,7 +311,8 @@ func (s *eventStream) onMetadata(ctx context.Context, metadata *kvpb.RangeFeedMe
 		// Only send new manual split keys (i.e. a child rangefeed start key that
 		// differs from the parent start key)
 		log.Infof(ctx, "sent split point %s", metadata.Span.Key)
-		s.seb.addSplitPoint(metadata.Span.Key)
+		m := *metadata
+		s.seb.addSplitPoint(m.Span.Key)
 		s.setErr(s.maybeFlushBatch(ctx))
 	}
 }
