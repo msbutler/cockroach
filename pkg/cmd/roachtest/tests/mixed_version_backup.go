@@ -2268,6 +2268,15 @@ func (bc *backupCollection) verifyBackupCollection(
 	if err := d.testUtils.waitForJobSuccess(ctx, l, rng, jobID, internalSystemJobs); err != nil {
 		return err
 	}
+	if d.testUtils.onlineRestore {
+		var downloadJobID int
+		if err := d.testUtils.QueryRow(ctx, rng, `SELECT job_id FROM [SHOW JOBS] WHERE description LIKE '%Background Data Download%' ORDER BY created DESC LIMIT 1`).Scan(&downloadJobID); err != nil {
+			return err
+		}
+		if err := d.testUtils.waitForJobSuccess(ctx, l, rng, downloadJobID, internalSystemJobs); err != nil {
+			return err
+		}
+	}
 
 	restoredContents, err := d.computeTableContents(
 		ctx, l, rng, restoredTables, bc.contents, "", /* timestamp */
