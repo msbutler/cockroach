@@ -255,7 +255,7 @@ func (ikv replicateImportKV) runDriver(
 ) error {
 	if ikv.replicateSplits {
 		setup.dst.sysSQL.Exec(t, "SET CLUSTER SETTING physical_replication.consumer.ingest_split_event.enabled = true")
-		setup.src.sysSQL.Exec(t, "SET CLUSTER SETTING kv.rangefeed.concurrent_catchup_iterators = 32")
+		setup.src.sysSQL.Exec(t, "SET CLUSTER SETTING kv.rangefeed.concurrent_catchup_iterators = 64")
 	}
 	time.Sleep(time.Second *10)
 	return defaultWorkloadDriver(workloadCtx, setup, c, ikv)
