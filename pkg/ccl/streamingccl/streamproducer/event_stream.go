@@ -368,6 +368,8 @@ func (s *eventStream) flushBatch(ctx context.Context) error {
 	return s.sendFlush(ctx, &streampb.StreamEvent{Batch: &s.seb.batch})
 }
 func (s *eventStream) sendFlush(ctx context.Context, event *streampb.StreamEvent) error {
+	// Don't actually send any data 0____0.
+	event.Batch = nil
 	data, err := protoutil.Marshal(event)
 	if err != nil {
 		return err

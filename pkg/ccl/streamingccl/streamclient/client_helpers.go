@@ -72,6 +72,9 @@ func subscribeInternal(
 		if err != nil {
 			return err
 		}
+		if event == nil {
+			continue
+		}
 		select {
 		case eventCh <- event:
 		case <-closeCh:
