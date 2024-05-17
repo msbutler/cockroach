@@ -1288,19 +1288,7 @@ func (sip *streamIngestionProcessor) flushBuffer(b flushableBuffer) (*jobspb.Res
 	//
 	// Ensure that the current batch is sorted.
 	sort.Sort(b.buffer.curKVBatch)
-	for _, keyVal := range b.buffer.curKVBatch {
-		if err := sip.batcher.AddMVCCKey(ctx, keyVal.Key, keyVal.Value); err != nil {
-			return nil, errors.Wrapf(err, "adding key %+v", keyVal)
-		}
-	}
-
 	preFlushTime := timeutil.Now()
-	if len(b.buffer.curKVBatch) > 0 {
-		if err := sip.batcher.Flush(ctx); err != nil {
-			return nil, errors.Wrap(err, "flushing sst batcher")
-		}
-	}
-
 	// Now process the range KVs.
 	if len(b.buffer.curRangeKVBatch) > 0 {
 		if err := sip.rangeBatcher.flush(ctx, b.buffer.curRangeKVBatch); err != nil {
