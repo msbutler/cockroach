@@ -1015,11 +1015,11 @@ func createImportingDescriptors(
 
 	// We get the spans of the restoring tables _as they appear in the backup_,
 	// that is, in the 'old' keyspace, before we reassign the table IDs.
-	preRestoreSpans, err := spansForAllRestoreTableIndexes(backupCodec, preRestoreTables, nil, details.SchemaOnly, details.ExperimentalOnline)
+	preRestoreSpans, err := spansForAllRestoreTableIndexes(backupCodec, preRestoreTables, nil, details.SchemaOnly, false)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	postRestoreSpans, err := spansForAllRestoreTableIndexes(backupCodec, postRestoreTables, nil, details.SchemaOnly, details.ExperimentalOnline)
+	postRestoreSpans, err := spansForAllRestoreTableIndexes(backupCodec, postRestoreTables, nil, details.SchemaOnly, false)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1027,7 +1027,7 @@ func createImportingDescriptors(
 	if details.VerifyData {
 		// verifySpans contains the spans that should be read and checksum'd during a
 		// verify_backup_table_data RESTORE
-		verifySpans, err = spansForAllRestoreTableIndexes(backupCodec, postRestoreTables, nil, false, details.ExperimentalOnline)
+		verifySpans, err = spansForAllRestoreTableIndexes(backupCodec, postRestoreTables, nil, false, false)
 		if err != nil {
 			return nil, nil, nil, err
 		}
