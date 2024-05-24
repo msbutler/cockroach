@@ -88,7 +88,7 @@ func registerOnlineRestorePerf(r registry.Registry) {
 				nonRevisionHistory: true,
 				cloud:              spec.GCE,
 				version:            "24.1",
-				workload:           tpccRestore{tpccRestoreOptions{warehouses: 5000, waitFraction: 0, workers: 100, maxRate: 600}},
+				workload:           tpccRestore{tpccRestoreOptions{warehouses: 5000, waitFraction: 0, workers: 150, maxRate: 600}},
 				customFixtureDir:   `'gs://cockroach-fixtures-us-east1/backups/tpc-c/v24.1/db/warehouses=5k?AUTH=implicit'`}),
 			timeout:                1 * time.Hour,
 			suites:                 registry.Suites(registry.Nightly),
@@ -610,7 +610,7 @@ func runRestore(
 			// Run the workload for at most 10 minutes.
 			testRuntime := timeutil.Since(testStartTime)
 			workloadDuration := sp.timeout - (testRuntime + time.Minute)
-			maxWorkloadDuration := time.Minute * 10
+			maxWorkloadDuration := time.Minute * 2
 			if workloadDuration > maxWorkloadDuration {
 				workloadDuration = maxWorkloadDuration
 			}
