@@ -39,11 +39,11 @@ import (
 // across all nodes measured in milliseconds.
 var sqlServiceLatencyP95Agg = clusterstats.AggQuery{
 	Stat:  sqlServiceLatency,
-	Query: "histogram_quantile(0.95, sum by(le) (rate(sql_service_latency_bucket[30s]))) / (1000*1000)",
+	Query: "histogram_quantile(0.95, sum by(le) (rate(sql_service_latency_bucket[1m]))) / (1000*1000)",
 	Tag:   "P95 Foreground Latency (ms)",
 }
 
-var queriesThroughput = clusterstats.ClusterStat{Query: "rate(sql_query_count[30s])", LabelName: "node"}
+var queriesThroughput = clusterstats.ClusterStat{Query: "rate(sql_query_count[1m])", LabelName: "node"}
 
 var queriesThroughputAgg = clusterstats.AggQuery{
 	Stat:  queriesThroughput,
@@ -153,6 +153,13 @@ func registerOnlineRestorePerf(r registry.Registry) {
 							rd.prepareCluster(ctx)
 
 							restoreStats := runRestore(ctx, t, c, sp, rd, runOnline, runWorkload, useWorkarounds)
+							if runWorkload {
+								require.NoError(t, exportStats(
+									ctx,
+									rd,
+									restoreStats,
+								))
+							}
 							if runOnline {
 								require.NoError(t, postRestoreValidation(
 									ctx,
@@ -160,13 +167,6 @@ func registerOnlineRestorePerf(r registry.Registry) {
 									t.L(),
 									sp.backup.workload.DatabaseName(),
 									restoreStats.downloadEndTimeLowerBound,
-								))
-							}
-							if runWorkload {
-								require.NoError(t, exportStats(
-									ctx,
-									rd,
-									restoreStats,
 								))
 							}
 						},
@@ -364,7 +364,7 @@ func exportStats(ctx context.Context, rd restoreDriver, restoreStats restoreStat
 			var timeToHealth time.Time
 			healthyLatencyRatio := 1.25
 			n := len(stats[latencyQueryKey].Value)
-			rd.t.L().Printf("aggregating latency over %d data points", n)
+			rd.t.L().Printf("aggregating latency over %d data points. start time %s, end time %s", n, restoreStats.workloadStartTime, endTime)
 			if n == 0 {
 				return "", 0
 			}
