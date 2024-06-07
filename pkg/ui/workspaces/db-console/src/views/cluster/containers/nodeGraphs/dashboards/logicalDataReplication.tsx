@@ -24,6 +24,20 @@ export default function (props: GraphDashboardProps) {
 
   return [
     <LineGraph
+      title="Logical Bytes Sent"
+      sources={storeSources}
+      tenantSource={tenantSource}
+      tooltip={`Rate at which the logical bytes (sum of keys + values) are received by all logical replication jobs`}
+    >
+      <Axis units={AxisUnits.Bytes} label="bytes">
+        <Metric
+          name="cr.node.logical_replication.logical_bytes"
+          title="Logical Bytes"
+          nonNegativeRate
+        />
+      </Axis>
+    </LineGraph>,
+    <LineGraph
       title="Logical Bytes Received"
       sources={storeSources}
       tenantSource={tenantSource}
