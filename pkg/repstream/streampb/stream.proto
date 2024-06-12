@@ -95,6 +95,11 @@ message ReplicationProducerRequest {
   repeated string table_names = 4;
 }
 
+enum ConsumerType {
+  PHYSICAL_REPLICATION = 0;
+  LOGICAL_REPLICATION = 1;
+}
+
 // StreamPartitionSpec is the stream partition specification.
 message StreamPartitionSpec {
   // PreviousReplicatedTimestamp specifies the timestamp from which spans will
@@ -142,7 +147,9 @@ message StreamPartitionSpec {
   // set.
   bool with_filtering = 8;
 
-  // NEXT ID: 10.
+  ConsumerType consumer_type = 10;
+
+  // NEXT ID: 11.
 }
 
 // SpanConfigEventStreamSpec is the span config event stream specification.

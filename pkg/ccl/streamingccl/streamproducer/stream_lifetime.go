@@ -300,6 +300,7 @@ func buildReplicationStreamSpec(
 	tenantID roachpb.TenantID,
 	forSpanConfigs bool,
 	targetSpans roachpb.Spans,
+	consumerType streampb.ConsumerType,
 ) (*streampb.ReplicationStreamSpec, error) {
 	jobExecCtx := evalCtx.JobExecContext.(sql.JobExecContext)
 
@@ -344,6 +345,7 @@ func buildReplicationStreamSpec(
 			SQLAddress: nodeInfo.SQLAddress,
 			Locality:   nodeInfo.Locality,
 			PartitionSpec: &streampb.StreamPartitionSpec{
+				ConsumerType: consumerType,
 				Spans: sp.Spans,
 				Config: streampb.StreamPartitionSpec_ExecutionConfig{
 					MinCheckpointFrequency: streamingccl.StreamReplicationMinCheckpointFrequency.Get(&evalCtx.Settings.SV),
