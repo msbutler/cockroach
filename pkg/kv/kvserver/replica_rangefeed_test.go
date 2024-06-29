@@ -460,20 +460,6 @@ func TestReplicaRangefeed(t *testing.T) {
 	_, err = kv.SendWrappedWith(ctx, db, kvpb.Header{Timestamp: ts13}, pArgs)
 	require.Nil(t, err)
 
-	// Insert a key transactionally with OriginID == 1. NB: this key should not
-	// appear in the results.
-	ts14 := initTime.Add(0, 14)
-	pErr = store1.DB().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
-		pErr = txn.SetFixedTimestamp(ctx, ts14)
-		require.Nil(t, pErr)
-		txn.SetOmitInRangefeeds()
-		return txn.Put(ctx, roachpb.Key("p"), []byte("val14"))
-	})
-	require.Nil(t, err)
-	// Read to force intent resolution.
-	_, pErr = store1.DB().Get(ctx, roachpb.Key("p"))
-	require.Nil(t, err)
-
 	// Wait for all streams to observe the expected events.
 	expVal2 := roachpb.MakeValueFromBytesAndTimestamp([]byte("val2"), ts2)
 	expVal3 := roachpb.MakeValueFromBytesAndTimestamp([]byte("val3"), ts3)
@@ -583,6 +569,141 @@ func TestReplicaRangefeed(t *testing.T) {
 				pErr, `must be after replica GC threshold`,
 			) {
 				return pErr
+			}
+		}
+		return nil
+	})
+}
+
+func setupSimpleRangefeed(t *testing.T, tc *testcluster.TestCluster) {
+
+}
+
+func TestReplicaRangefeedOriginIDFiltering(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	splitKey := roachpb.Key("a")
+
+	tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
+		ReplicationMode: base.ReplicationManual,
+	})
+	defer tc.Stopper().Stop(ctx)
+	ts := tc.Servers[0]
+	store, err := ts.GetStores().(*kvserver.Stores).GetStore(ts.GetFirstStoreID())
+	require.NoError(t, err)
+	tc.SplitRangeOrFatal(t, splitKey)
+	tc.AddVotersOrFatal(t, splitKey, tc.Target(1), tc.Target(2))
+	rangeID := store.LookupReplica(roachpb.RKey(splitKey)).RangeID
+
+	// Write to the RHS of the split and wait for all replicas to process it.
+	// This ensures that all replicas have seen the split before we move on.
+	incArgs := incrementArgs(splitKey, 9)
+	_, pErr := kv.SendWrapped(ctx, store.TestSender(), incArgs)
+	require.Nil(t, pErr)
+	tc.WaitForValues(t, splitKey, []int64{9, 9, 9})
+
+	// Set up a rangefeed across a-c.
+	stream := newTestStream()
+	streamErrC := make(chan error, 1)
+	go func() {
+		req := kvpb.RangeFeedRequest{
+			Header:                kvpb.Header{RangeID: rangeID},
+			Span:                  roachpb.Span{Key: roachpb.Key("a"), EndKey: roachpb.Key("d")},
+			WithMatchingOriginIDs: []uint32{0},
+			WithDiff:              true,
+		}
+		timer := time.AfterFunc(10*time.Second, stream.Cancel)
+		defer timer.Stop()
+		streamErrC <- waitRangeFeed(store, &req, stream)
+	}()
+
+	// Wait for a checkpoint.
+	require.Eventually(t, func() bool {
+		if len(streamErrC) > 0 {
+			require.Fail(t, "unexpected rangefeed error", "%v", <-streamErrC)
+		}
+		events := stream.Events()
+		for _, event := range events {
+			require.NotNil(t, event.Checkpoint, "received non-checkpoint event: %v", event)
+		}
+		return len(events) > 0
+	}, 5*time.Second, 100*time.Millisecond)
+
+	aArgs := putArgs(roachpb.Key("a"), []byte("a1"))
+	_, kvErr := kv.SendWrapped(ctx, store.TestSender(), aArgs)
+	require.Nil(t, kvErr)
+
+	// Send without Txn.
+	bForeignArgs := putArgs(roachpb.Key("b"), []byte("b1"))
+	_, kvErr = kv.SendWrappedWith(ctx, store.TestSender(), kvpb.Header{WriteOptions: &kvpb.WriteOptions{OriginID: 1}}, bForeignArgs)
+	require.Nil(t, kvErr)
+
+	// Send with Txn to exercise MVCCCommitIntent logical op path.
+	if err := store.DB().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+		batch := txn.NewBatch()
+		batch.Put(roachpb.Key("d"), []byte("d3"))
+		batch.Header.WriteOptions = &kvpb.WriteOptions{OriginID: 1}
+		return txn.Run(ctx, batch)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read to force intent resolution.
+	_, getErr := store.DB().Get(ctx, roachpb.Key("d"))
+	require.Nil(t, getErr)
+
+	// Overwrite the remote write and assert it appears as a PrevValue.
+	if err := store.DB().Txn(ctx, func(ctx context.Context, txn *kv.Txn) error {
+		batch := txn.NewBatch()
+		batch.Put(roachpb.Key("d"), []byte("d4"))
+		return txn.Run(ctx, batch)
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read to force intent resolution.
+	_, getErr = store.DB().Get(ctx, roachpb.Key("d"))
+	require.Nil(t, getErr)
+
+	expEvents := []*kvpb.RangeFeedEvent{
+		{Val: &kvpb.RangeFeedValue{
+			Key:   roachpb.Key("a"),
+			Value: roachpb.MakeValueFromBytes([]byte("a1")),
+		}},
+		{Val: &kvpb.RangeFeedValue{
+			Key:       roachpb.Key("d"),
+			Value:     roachpb.MakeValueFromBytes([]byte("d4")),
+			PrevValue: roachpb.MakeValueFromBytes([]byte("d3")),
+		}},
+	}
+
+	testutils.SucceedsSoon(t, func() error {
+		if len(streamErrC) > 0 {
+			// Break if the error channel is already populated.
+			return nil
+		}
+
+		events := stream.Events()
+		// Filter out checkpoints. Those are not deterministic; they can come at any time.
+		var filteredEvents []*kvpb.RangeFeedEvent
+		for _, e := range events {
+			if e.Checkpoint != nil {
+				continue
+			}
+			filteredEvents = append(filteredEvents, e)
+		}
+		events = filteredEvents
+		if len(events) < len(expEvents) {
+			return errors.Errorf("too few events: %v", events)
+		}
+		// Ensure the key and value are the same (dont worry about the timestamp).
+		for i, e := range events {
+			require.Equal(t, expEvents[i].Val.Key, e.Val.Key)
+			require.Equal(t, expEvents[i].Val.Value.RawBytes, e.Val.Value.RawBytes)
+			if e.Val.PrevValue.RawBytes != nil {
+				require.Equal(t, expEvents[i].Val.PrevValue.RawBytes, e.Val.PrevValue.RawBytes)
 			}
 		}
 		return nil
