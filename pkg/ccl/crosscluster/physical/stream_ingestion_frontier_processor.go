@@ -12,6 +12,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/crosscluster"
 	"github.com/cockroachdb/cockroach/pkg/ccl/crosscluster/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/jobs"
@@ -28,6 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/span"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/redact"
@@ -41,6 +43,13 @@ const (
 	frontierEntriesFilename = "~replication-frontier-entries.binpb"
 )
 
+type ingestProcStats struct {
+	syncutil.Mutex
+	LowWaterMark hlc.Timestamp
+}
+
+type ingestStatsByNode map[base.SQLInstanceID]*ingestProcStats
+
 type streamIngestionFrontier struct {
 	execinfra.ProcessorBase
 
@@ -53,6 +62,8 @@ type streamIngestionFrontier struct {
 	// frontier contains the current resolved timestamp high-water for the tracked
 	// span set.
 	frontier span.Frontier
+
+	ingestionStats ingestStatsByNode
 
 	// metrics are monitoring all running ingestion jobs.
 	metrics *Metrics
@@ -122,6 +133,7 @@ func newStreamIngestionFrontierProcessor(
 		replicatedTimeAtStart: spec.ReplicatedTimeAtStart,
 		frontier:              frontier,
 		metrics:               flowCtx.Cfg.JobRegistry.MetricsStruct().StreamIngest.(*Metrics),
+		ingestionStats:        make(ingestStatsByNode),
 		client:                streamClient,
 		heartbeatSender: streamclient.NewHeartbeatSender(ctx, streamClient, streamID, func() time.Duration {
 			return crosscluster.StreamReplicationConsumerHeartbeatFrequency.Get(&flowCtx.Cfg.Settings.SV)
@@ -180,7 +192,7 @@ func (sf *streamIngestionFrontier) Next() (
 			break
 		}
 
-		if err := sf.noteResolvedTimestamps(row[0]); err != nil {
+		if err := sf.processIngestionProgress(row[0]); err != nil {
 			sf.MoveToDrainingAndLogError(err)
 			break
 		}
@@ -250,11 +262,11 @@ func (sf *streamIngestionFrontier) ConsumerClosed() {
 	sf.close()
 }
 
-// decodeResolvedSpans decodes an encoded datum of jobspb.ResolvedSpans into a
+// decodeIngestionUpdate decodes an encoded datum of jobspb.ResolvedSpans into a
 // jobspb.ResolvedSpans object.
-func decodeResolvedSpans(
+func decodeIngestionUpdate(
 	alloc *tree.DatumAlloc, resolvedSpanDatums rowenc.EncDatum,
-) (*jobspb.ResolvedSpans, error) {
+) (*streampb.IngestionProcessorProgress, error) {
 	if err := resolvedSpanDatums.EnsureDecoded(streamIngestionResultTypes[0], alloc); err != nil {
 		return nil, err
 	}
@@ -263,23 +275,23 @@ func decodeResolvedSpans(
 		return nil, errors.AssertionFailedf(`unexpected datum type %T: %s`,
 			resolvedSpanDatums.Datum, resolvedSpanDatums.Datum)
 	}
-	var resolvedSpans jobspb.ResolvedSpans
-	if err := protoutil.Unmarshal([]byte(*raw), &resolvedSpans); err != nil {
+	var ingestionProgress streampb.IngestionProcessorProgress
+	if err := protoutil.Unmarshal([]byte(*raw), &ingestionProgress); err != nil {
 		return nil, errors.NewAssertionErrorWithWrappedErrf(err,
 			`unmarshalling resolved timestamp: %x`, raw)
 	}
-	return &resolvedSpans, nil
+	return &ingestionProgress, nil
 }
 
-// noteResolvedTimestamps processes a batch of resolved timestamp events.
-func (sf *streamIngestionFrontier) noteResolvedTimestamps(
+// processIngestionProgress processes a batch of resolved timestamp events.
+func (sf *streamIngestionFrontier) processIngestionProgress(
 	resolvedSpanDatums rowenc.EncDatum,
 ) error {
-	resolvedSpans, err := decodeResolvedSpans(&sf.alloc, resolvedSpanDatums)
+	update, err := decodeIngestionUpdate(&sf.alloc, resolvedSpanDatums)
 	if err != nil {
 		return err
 	}
-	for _, resolved := range resolvedSpans.ResolvedSpans {
+	for _, resolved := range update.ResolvedSpans.ResolvedSpans {
 		// Inserting a timestamp less than the one the ingestion flow started at could
 		// potentially regress the job progress. This is not expected and thus we
 		// assert to catch such unexpected behavior.
@@ -293,6 +305,16 @@ func (sf *streamIngestionFrontier) noteResolvedTimestamps(
 			return err
 		}
 	}
+	// Update Node's stats
+	sqlNodeID := base.SQLInstanceID(update.SQLInstanceID)
+	stats, ok := sf.ingestionStats[sqlNodeID]
+	if !ok {
+		sf.ingestionStats[sqlNodeID] = &ingestProcStats{LowWaterMark: update.LowWater}
+		return nil
+	}
+	stats.Lock()
+	stats.LowWaterMark = update.LowWater
+	stats.Unlock()
 	return nil
 }
 
@@ -451,11 +473,10 @@ func (sf *streamIngestionFrontier) maybeCheckForLaggingNodes() error {
 	defer func() {
 		sf.lastNodeLagCheck = timeutil.Now()
 	}()
-	executionDetails := constructSpanFrontierExecutionDetailsWithFrontier(sf.spec.PartitionSpecs, sf.frontier)
 	log.VEvent(ctx, 2, "checking for lagging nodes")
 	err := checkLaggingNodes(
 		ctx,
-		executionDetails,
+		sf.ingestionStats,
 		maxLag,
 	)
 	return sf.handleLaggingNodeError(ctx, err)
