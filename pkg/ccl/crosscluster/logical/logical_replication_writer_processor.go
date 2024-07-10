@@ -18,6 +18,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ccl/crosscluster/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/kv/bulk"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/settings"
@@ -96,6 +97,8 @@ type logicalReplicationWriterProcessor struct {
 	dlqClient DeadLetterQueueClient
 
 	purgatory purgatory
+
+  batcher *bulk.SSTBatcher
 }
 
 var (
@@ -139,6 +142,14 @@ func newLogicalReplicationWriterProcessor(
 			settings: flowCtx.Cfg.Settings,
 			sd:       sql.NewInternalSessionData(ctx, flowCtx.Cfg.Settings, "" /* opName */),
 		}
+	}
+
+	sip.batcher, err = bulk.MakeStreamSSTBatcher(
+		ctx, db.KV(), rc, st, sip.FlowCtx.Cfg.BackupMonitor.MakeConcurrentBoundAccount(),
+		sip.FlowCtx.Cfg.BulkSenderLimiter, sip.onFlushUpdateMetricUpdate)
+	if err != nil {
+		sip.MoveToDrainingAndLogError(errors.Wrap(err, "creating stream sst batcher"))
+		return
 	}
 
 	lrw := &logicalReplicationWriterProcessor{
@@ -400,6 +411,10 @@ func (lrw *logicalReplicationWriterProcessor) handleEvent(
 
 	switch event.Type() {
 	case crosscluster.KVEvent:
+		if lrw.spec.PreviousReplicatedTimestamp.IsEmpty() {
+			// Issue offline addsstable initial scan
+
+		}
 		if err := lrw.handleStreamBuffer(ctx, event.GetKVs()); err != nil {
 			return err
 		}

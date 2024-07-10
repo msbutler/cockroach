@@ -470,6 +470,9 @@ func (rh *rowHandler) handleRow(ctx context.Context, row tree.Datums) error {
 		}); err != nil {
 		return err
 	}
+	if rh.replicatedTimeAtStart.IsEmpty() && !replicatedTime.IsEmpty() {
+		return errors.Newf("initial scan is complete, replan and turn descriptors on")
+	}
 
 	rh.metrics.ReplicatedTimeSeconds.Update(replicatedTime.GoTime().Unix())
 	return nil

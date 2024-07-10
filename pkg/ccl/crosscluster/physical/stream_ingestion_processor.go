@@ -401,20 +401,19 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 
 	sip.metrics = sip.FlowCtx.Cfg.JobRegistry.MetricsStruct().StreamIngest.(*Metrics)
 
-	st := sip.FlowCtx.Cfg.Settings
-	db := sip.FlowCtx.Cfg.DB
-	rc := sip.FlowCtx.Cfg.RangeCache
-
-	var err error
-	sip.batcher, err = bulk.MakeStreamSSTBatcher(
-		ctx, db.KV(), rc, st, sip.FlowCtx.Cfg.BackupMonitor.MakeConcurrentBoundAccount(),
-		sip.FlowCtx.Cfg.BulkSenderLimiter, sip.onFlushUpdateMetricUpdate)
-	if err != nil {
-		sip.MoveToDrainingAndLogError(errors.Wrap(err, "creating stream sst batcher"))
-		return
+	if sip.spec.PreviousReplicatedTimestamp.IsEmpty() {
+		st := sip.FlowCtx.Cfg.Settings
+		db := sip.FlowCtx.Cfg.DB
+		rc := sip.FlowCtx.Cfg.RangeCache
+		var err error
+		sip.batcher, err = bulk.MakeStreamSSTBatcher(
+			ctx, db.KV(), rc, st, sip.FlowCtx.Cfg.BackupMonitor.MakeConcurrentBoundAccount(),
+			sip.FlowCtx.Cfg.BulkSenderLimiter, sip.onFlushUpdateMetricUpdate)
+		if err != nil {
+			sip.MoveToDrainingAndLogError(errors.Wrap(err, "creating stream sst batcher"))
+			return
+		}
 	}
-
-	sip.rangeBatcher = newRangeKeyBatcher(ctx, st, db.KV(), sip.onFlushUpdateMetricUpdate)
 
 	var subscriptionCtx context.Context
 	subscriptionCtx, sip.subscriptionCancel = context.WithCancel(sip.Ctx())
