@@ -11,10 +11,12 @@ package logical
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdcevent"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/sql/isql"
+	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
@@ -35,7 +37,7 @@ const (
   		dlq_reason					STRING NOT NULL,
 			mutation_type				defaultdb.crdb_replication_mutation_type,       
   		key_value_bytes			BYTES NOT NULL,
-			incoming_row     		STRING NOT NULL,
+			incoming_row     		JSONB NULL,
   		-- PK should be unique based on the ID, job ID and timestamp at which the 
   		-- row was written to the table.
   		-- For any table being replicated in an LDR job, there should not be rows 
@@ -44,14 +46,14 @@ const (
 			PRIMARY KEY (ingestion_job_id, dlq_timestamp, id) USING HASH
 		)`
 
-	insertRowStmt = `INSERT INTO %s (
+	insertRowStmtNotRow = `INSERT INTO %s (
 			ingestion_job_id, 
 			table_id, 
 			dlq_reason,
 			mutation_type,
 			key_value_bytes,
-			incoming_row
-		) VALUES ($1, $2, $3, $4, $5, $6)`
+		) VALUES ($1, $2, $3, $4, $5`
+	firstJSONPlaceholder = 6
 )
 
 type ReplicationMutationType int
@@ -147,6 +149,30 @@ func (dlq *deadLetterQueueClient) Create(ctx context.Context, tableIDs []int32) 
 	return nil
 }
 
+func addJSONTOInsert(
+	insertStatementBase string, cdcEventRow cdcevent.Row,
+) (string, []interface{}, error) {
+	var fullStmt strings.Builder
+	scatchDatums := make([]interface{}, len(cdcEventRow.ResultColumns()))
+
+	fullStmt.WriteString(insertStatementBase)
+
+	placeHolder := firstJSONPlaceholder
+	// fails on tables with non visible columns and with column families
+	iter := cdcEventRow.ForEachColumn()
+
+	if err := iter.Datum(func(datum tree.Datum, col cdcevent.ResultColumn) error {
+		fullStmt.WriteString(fmt.Sprintf(", $%d", placeHolder))
+		placeHolder++
+		scatchDatums = append(scatchDatums, datum)
+		return nil
+	}); err != nil {
+		return "", nil, err
+	}
+	fullStmt.WriteString(")")
+	return fullStmt.String(), scatchDatums, nil
+}
+
 func (dlq *deadLetterQueueClient) Log(
 	ctx context.Context,
 	ingestionJobID int64,
@@ -173,19 +199,36 @@ func (dlq *deadLetterQueueClient) Log(
 		mutationType = Insert
 	}
 
+	// Attempt to insert row into DLQ with a json'd row, and if that fails, just insert the bytes.
+	insertStmtWithJSON, datums, err := addJSONTOInsert(fmt.Sprintf(insertRowStmtNotRow, tableName), cdcEventRow)
+	if err != nil {
+		return errors.Wrap(err, "failed to get datums for dlq insert with json'd row")
+	}
+
+	queryWithJsonArgs := append([]interface{}{ingestionJobID, tableID, dlqReason.String(), mutationType.String(), bytes}, datums...)
+
 	if _, err := dlq.ie.Exec(
 		ctx,
-		"insert-row-into-dlq-table",
+		"insert-row-into-dlq-table-with-json",
 		nil, /* txn */
-		fmt.Sprintf(insertRowStmt, tableName),
-		ingestionJobID,
-		tableID,
-		dlqReason.String(),
-		mutationType.String(),
-		bytes,
-		cdcEventRow.DebugString(),
+		fmt.Sprintf(insertStmtWithJSON, tableName),
+		queryWithJsonArgs...,
 	); err != nil {
-		return errors.Wrapf(err, "failed to insert row for table %s", tableName)
+		log.Warningf(ctx, "failed to insert row for table %s with json'd row: %v", tableName, err)
+		insertRowFailback := fmt.Sprintf(insertRowStmtNotRow+")", tableName)
+		if _, err := dlq.ie.Exec(
+			ctx,
+			"insert-row-into-dlq-table",
+			nil, /* txn */
+			insertRowFailback,
+			ingestionJobID,
+			tableID,
+			dlqReason.String(),
+			mutationType.String(),
+			bytes,
+		); err != nil {
+			return errors.Wrapf(err, "failed to insert row for table %s", tableName)
+		}
 	}
 	return nil
 }

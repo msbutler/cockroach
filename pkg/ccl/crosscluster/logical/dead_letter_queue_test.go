@@ -165,3 +165,17 @@ func TestDLQClient(t *testing.T) {
 		})
 	}
 }
+
+func TestAddToDLQ(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	srv, db, _ := serverutils.StartServer(t, base.TestServerArgs{})
+	defer srv.Stopper().Stop(context.Background())
+
+	sqlDB := sqlutils.MakeSQLRunner(db)
+	sqlDB.Exec(t, `CREATE TABLE dlq (pk INT8 NULL, v STRING NULL, json JSONB NULL)`)
+	sqlDB.Exec(t, `CREATE TABLE foo (pk INT8 NULL, v STRING NULL)`)
+	sqlDB.Exec(t, "INSERT INTO dlq VALUES ($1, $2, row_to_json(row(100, 'blob2')::foo))", 1, "dlq")
+	sqlDB.Exec(t, "INSERT INTO dlq VALUES ($1, $2, row_to_json(row($3::INT, $4::STRING)::foo))", 2, "dlq", 100, "conflict_col_2")
+}
