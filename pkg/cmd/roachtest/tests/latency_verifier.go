@@ -132,11 +132,7 @@ func (lv *latencyVerifier) noteHighwater(highwaterTime time.Time) {
 			update := fmt.Sprintf(
 				"%s: end-to-end latency %s not yet below target steady latency %s",
 				lv.name, latency.Truncate(time.Millisecond), lv.targetSteadyLatency.Truncate(time.Millisecond))
-			if lv.setTestStatus != nil {
-				lv.setTestStatus(update)
-			} else {
-				lv.logger.Printf(update)
-			}
+			lv.setTestStatus(update)
 		}
 		return
 	}
@@ -150,11 +146,7 @@ func (lv *latencyVerifier) noteHighwater(highwaterTime time.Time) {
 		update := fmt.Sprintf(
 			"%s: end-to-end steady latency %s; max steady latency so far %s; highwater %s",
 			lv.name, latency.Truncate(time.Millisecond), lv.maxSeenSteadyLatency.Truncate(time.Millisecond), highwaterTime)
-		if lv.setTestStatus != nil {
-			lv.setTestStatus(update)
-		} else {
-			lv.logger.Printf(update)
-		}
+		lv.setTestStatus(update)
 	}
 }
 

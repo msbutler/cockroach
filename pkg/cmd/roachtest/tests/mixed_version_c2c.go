@@ -1,4 +1,4 @@
-// Copyright 2023 The Cockroach Authors.
+// Copyright 2024 The Cockroach Authors.
 //
 // Use of this software is governed by the Business Source License
 // included in the file licenses/BSL.txt.
@@ -44,7 +44,7 @@ func registerC2CMixedVersions(r registry.Registry) {
 		additionalDuration:        0 * time.Minute,
 		cutover:                   30 * time.Second,
 		skipNodeDistributionCheck: true,
-		clouds:                    registry.AllExceptAzure,
+		clouds:                    registry.AllClouds,
 		suites:                    registry.Suites(registry.Nightly),
 	}
 
@@ -63,7 +63,6 @@ func registerC2CMixedVersions(r registry.Registry) {
 const (
 	expectedMajorUpgrades = 1
 	destTenantName        = "dest"
-	minSupportedVersion   = "v23.2.0"
 	replicationJobType    = "REPLICATION STREAM INGESTION"
 	fingerprintQuery      = `SELECT fingerprint FROM [SHOW EXPERIMENTAL_FINGERPRINTS FROM VIRTUAL CLUSTER $1 WITH START TIMESTAMP = '%s'] AS OF SYSTEM TIME '%s'`
 )
@@ -82,7 +81,6 @@ func InitC2CMixed(
 ) *c2cMixed {
 	// TODO(msbutler): allow for version skipping and multiple upgrades.
 	sourceMvt := mixedversion.NewTest(ctx, t, t.L(), c, c.Range(1, sp.srcNodes),
-		mixedversion.MinimumSupportedVersion(minSupportedVersion),
 		mixedversion.AlwaysUseLatestPredecessors,
 		mixedversion.NumUpgrades(expectedMajorUpgrades),
 		mixedversion.EnabledDeploymentModes(mixedversion.SharedProcessDeployment),
@@ -91,7 +89,6 @@ func InitC2CMixed(
 	)
 
 	destMvt := mixedversion.NewTest(ctx, t, t.L(), c, c.Range(sp.srcNodes+1, sp.srcNodes+sp.dstNodes),
-		mixedversion.MinimumSupportedVersion(minSupportedVersion),
 		mixedversion.AlwaysUseLatestPredecessors,
 		mixedversion.NumUpgrades(expectedMajorUpgrades),
 		mixedversion.EnabledDeploymentModes(mixedversion.SystemOnlyDeployment),
@@ -229,14 +226,14 @@ func (cm *c2cMixed) WorkloadHook(ctx context.Context) {
 	tpccRunCmd := roachtestutil.NewCommand("./cockroach workload run tpcc").
 		Arg("{pgurl%s}", cm.c.Range(1, cm.sp.srcNodes)).
 		Option("tolerate-errors").
-		Flag("warehouses", 100)
+		Flag("warehouses", 500)
 	cm.workloadStopper = cm.sourceMvt.Workload("tpcc", cm.c.WorkloadNode(), tpccInitCmd, tpccRunCmd)
 }
 
 func (cm *c2cMixed) LatencyHook(ctx context.Context) {
 	cm.destMvt.BackgroundFunc("latency verifier", func(ctx context.Context, l *logger.Logger, r *rand.Rand, h *mixedversion.Helper) error {
 		lv := makeLatencyVerifier("stream-ingestion", 0, cm.sp.maxAcceptedLatency, l,
-			getStreamIngestionJobInfo, nil, true)
+			getStreamIngestionJobInfo, func(args ...interface{}) { l.Printf(fmt.Sprintln(args...)) }, true)
 		defer lv.maybeLogLatencyHist()
 		_, db := h.RandomDB(r)
 
@@ -245,8 +242,7 @@ func (cm *c2cMixed) LatencyHook(ctx context.Context) {
 		if err := lv.pollLatencyUntilJobSucceeds(ctx, db, int(cm.ingestionJobID), time.Second*5, dummyCh); ctx.Err() == nil {
 			// The ctx is cancelled when the background func is successfully stopped,
 			// therefore, don't return a context cancellation error.
-			l.Printf("latency verifier error: %s", err)
-			return err
+			return errors.Wrapf(err, "latency verifier failed")
 		}
 		return nil
 	})
@@ -358,6 +354,9 @@ func (cm *c2cMixed) destCutoverAndFingerprint(
 	}
 
 	l.Printf("Retained time %s; cutover time %s", retainedHLCTime.GoTime(), cutover.GoTime())
+	// The fingerprint args are sent over to the source before the dest begins
+	// fingerprinting merely so both clusters can run the fingerprint commands in
+	// parallel.
 	cm.fingerprintArgsChan <- fingerprintArgs{
 		retainedTime: retainedHLCTime,
 		cutoverTime:  cutover,
@@ -370,6 +369,8 @@ func (cm *c2cMixed) destCutoverAndFingerprint(
 		return err
 	}
 	cm.fingerprintChan <- destFingerprint
+	// TODO(msbutler): we could spin up the workload for a bit on the destination,
+	// just to check that it works after cutover.
 	return nil
 }
 
