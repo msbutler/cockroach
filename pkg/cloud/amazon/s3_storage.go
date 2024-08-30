@@ -235,7 +235,7 @@ func clientConfig(conf *cloudpb.ExternalStorage_S3) s3ClientConfig {
 		secret:                conf.Secret,
 		tempToken:             conf.TempToken,
 		auth:                  conf.Auth,
-		verbose:               true,
+		verbose:               log.V(2),
 		assumeRoleProvider:    assumeRoleProvider,
 		delegateRoleProviders: delegateRoleProviders,
 	}
