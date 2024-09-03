@@ -85,6 +85,8 @@ const (
 
 	// scheme component of an S3 URI.
 	scheme = "s3"
+
+	checksumAlgorithm = types.ChecksumAlgorithmSha256
 )
 
 // NightlyEnvVarS3Params maps param keys that get added to an S3
@@ -520,6 +522,50 @@ func constructEndpointURI(endpoint string) (string, error) {
 	return u.String(), nil
 }
 
+func newSimpleClient(cfg aws.Config, endpointURI string) *s3.Client {
+	return s3.NewFromConfig(cfg, func(options *s3.Options) {
+		if endpointURI != "" {
+			options.BaseEndpoint = aws.String(endpointURI)
+		}
+	})
+}
+
+func maybeProcessDelegateRoleProviders(
+	assumeRoleProvider roleProvider,
+	delegateRoleProviders []roleProvider,
+	endpointURI string,
+	cfg aws.Config,
+) aws.Config {
+	if assumeRoleProvider == (roleProvider{}) {
+		return cfg
+	}
+
+	withExternalID := func(externalID string) func(p *stscreds.AssumeRoleOptions) {
+		return func(p *stscreds.AssumeRoleOptions) {
+			if externalID != "" {
+				p.ExternalID = aws.String(externalID)
+			}
+		}
+	}
+
+	newSecurityTokenClient := func(cfg aws.Config, endpointURI string) *sts.Client {
+		return sts.NewFromConfig(cfg, func(options *sts.Options) {
+			if endpointURI != "" {
+				options.BaseEndpoint = aws.String(endpointURI)
+			}
+		})
+	}
+	// If there are delegate roles in the assume-role chain, we create a session
+	// for each role in order for it to fetch the credentials from the next role
+	// in the chain.
+	for _, delegateProvider := range delegateRoleProviders {
+		intermediateCreds := stscreds.NewAssumeRoleProvider(newSecurityTokenClient(cfg, delegateProvider.externalID), delegateProvider.roleARN, withExternalID(delegateProvider.externalID))
+		cfg.Credentials = intermediateCreds
+	}
+	cfg.Credentials = stscreds.NewAssumeRoleProvider(newSecurityTokenClient(cfg, endpointURI), assumeRoleProvider.roleARN, withExternalID(assumeRoleProvider.externalID))
+	return cfg
+}
+
 // newClient creates a client from the passed s3ClientConfig and if the passed
 // config's region is empty, used the passed bucket to determine a region and
 // configures the client with it as well as returning it (so the caller can
@@ -581,27 +627,7 @@ func newClient(
 			return s3Client{}, "", err
 		}
 	}
-
-	if conf.assumeRoleProvider.roleARN != "" {
-		for _, delegateProvider := range conf.delegateRoleProviders {
-			client := sts.NewFromConfig(cfg, func(options *sts.Options) {
-				if endpointURI != "" {
-					options.BaseEndpoint = aws.String(endpointURI)
-				}
-			})
-			intermediateCreds := stscreds.NewAssumeRoleProvider(client, delegateProvider.roleARN, withExternalID(delegateProvider.externalID))
-			cfg.Credentials = aws.NewCredentialsCache(intermediateCreds)
-		}
-
-		client := sts.NewFromConfig(cfg, func(options *sts.Options) {
-			if endpointURI != "" {
-				options.BaseEndpoint = aws.String(endpointURI)
-			}
-		})
-
-		creds := stscreds.NewAssumeRoleProvider(client, conf.assumeRoleProvider.roleARN, withExternalID(conf.assumeRoleProvider.externalID))
-		cfg.Credentials = creds
-	}
+	cfg = maybeProcessDelegateRoleProviders(conf.assumeRoleProvider, conf.delegateRoleProviders, endpointURI, cfg)
 
 	region := conf.region
 	if region == "" {
@@ -609,7 +635,7 @@ func newClient(
 		// below once we get the actual bucket region.
 		cfg.Region = "us-east-1"
 		if err := cloud.DelayedRetry(ctx, "s3manager.GetBucketRegion", s3ErrDelay, func() error {
-			region, err = manager.GetBucketRegion(ctx, s3.NewFromConfig(cfg), conf.bucket)
+			region, err = manager.GetBucketRegion(ctx, newSimpleClient(cfg, endpointURI), conf.bucket)
 			return err
 		}); err != nil {
 			return s3Client{}, "", errors.Wrap(err, "could not find s3 bucket's region")
@@ -617,11 +643,7 @@ func newClient(
 	}
 	cfg.Region = region
 
-	c := s3.NewFromConfig(cfg, func(options *s3.Options) {
-		if endpointURI != "" {
-			options.BaseEndpoint = aws.String(endpointURI)
-		}
-	})
+	c := newSimpleClient(cfg, endpointURI)
 	u := manager.NewUploader(c, func(uploader *manager.Uploader) {
 		uploader.PartSize = cloud.WriteChunkSize.Get(&settings.SV)
 	})
@@ -685,7 +707,7 @@ func (u *putUploader) Write(p []byte) (int, error) {
 
 func (u *putUploader) Close() error {
 	u.input.Body = bytes.NewReader(u.b.Bytes())
-	// TODO(adityamaru): plumb a ctx through to close.
+	// TODO(msbutler): plumb a ctx through to close.
 	_, err := u.client.PutObject(context.Background(), u.input)
 	return err
 }
@@ -706,7 +728,7 @@ func (s *s3Storage) putUploader(ctx context.Context, basename string) (io.WriteC
 			ServerSideEncryption: types.ServerSideEncryption(s.conf.ServerEncMode),
 			SSEKMSKeyId:          nilIfEmpty(s.conf.ServerKMSID),
 			StorageClass:         types.StorageClass(s.conf.StorageClass),
-			ChecksumAlgorithm:    types.ChecksumAlgorithmSha256,
+			ChecksumAlgorithm:    checksumAlgorithm,
 		},
 		client: client,
 	}, nil
@@ -735,7 +757,7 @@ func (s *s3Storage) Writer(ctx context.Context, basename string) (io.WriteCloser
 			ServerSideEncryption: types.ServerSideEncryption(s.conf.ServerEncMode),
 			SSEKMSKeyId:          nilIfEmpty(s.conf.ServerKMSID),
 			StorageClass:         types.StorageClass(s.conf.StorageClass),
-			ChecksumAlgorithm:    types.ChecksumAlgorithmSha256,
+			ChecksumAlgorithm:    checksumAlgorithm,
 		})
 		err = interpretAWSError(err)
 		err = errors.Wrap(err, "upload failed")
@@ -1012,14 +1034,6 @@ func s3ErrDelay(err error) time.Duration {
 		}
 	}
 	return 0
-}
-
-func withExternalID(externalID string) func(p *stscreds.AssumeRoleOptions) {
-	return func(p *stscreds.AssumeRoleOptions) {
-		if externalID != "" {
-			p.ExternalID = aws.String(externalID)
-		}
-	}
 }
 
 func init() {

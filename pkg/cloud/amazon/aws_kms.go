@@ -19,9 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/cockroachdb/cockroach/pkg/cloud"
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
@@ -200,29 +198,7 @@ func MakeAWSKMS(ctx context.Context, uri string, env cloud.KMSEnv) (cloud.KMS, e
 		return nil, cloud.KMSInaccessible(errors.Wrap(err, "could not initialize an aws config"))
 	}
 	cfg.Region = region
-
-	if kmsURIParams.roleProvider != (roleProvider{}) {
-		// If there are delegate roles in the assume-role chain, we create a session
-		// for each role in order for it to fetch the credentials from the next role
-		// in the chain.
-		for _, delegateProvider := range kmsURIParams.delegateRoleProviders {
-			client := sts.NewFromConfig(cfg, func(options *sts.Options) {
-				if endpointURI != "" {
-					options.BaseEndpoint = aws.String(endpointURI)
-				}
-			})
-			intermediateCreds := stscreds.NewAssumeRoleProvider(client, delegateProvider.roleARN, withExternalID(delegateProvider.externalID))
-			cfg.Credentials = intermediateCreds
-		}
-
-		client := sts.NewFromConfig(cfg, func(options *sts.Options) {
-			if endpointURI != "" {
-				options.BaseEndpoint = aws.String(endpointURI)
-			}
-		})
-		creds := stscreds.NewAssumeRoleProvider(client, kmsURIParams.roleProvider.roleARN, withExternalID(kmsURIParams.roleProvider.externalID))
-		cfg.Credentials = creds
-	}
+	cfg = maybeProcessDelegateRoleProviders(kmsURIParams.roleProvider, kmsURIParams.delegateRoleProviders, endpointURI, cfg)
 
 	reuse := reuseKMSSession.Get(&env.ClusterSettings().SV)
 	if reuse {
