@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-A="$USER-a"
-B="$USER-b"
+A="$USER-a-admission"
+B="$USER-b-admission"
 
 
 if [ "$#" -lt 1 ]; then
