@@ -217,7 +217,7 @@ func TestLDRBasic(ctx context.Context, t test.Test, c cluster.Cluster, setup mul
 	llv.assertValid(t)
 	rlv.assertValid(t)
 
-	VerifyCorrectness(t, setup, leftJobID, rightJobID, 2*time.Minute, ldrWorkload)
+	VerifyCorrectness(c, t, setup, leftJobID, rightJobID, 2*time.Minute, ldrWorkload)
 }
 
 func TestLDRUpdateHeavy(
@@ -281,7 +281,7 @@ func TestLDRUpdateHeavy(
 	llv.assertValid(t)
 	rlv.assertValid(t)
 
-	VerifyCorrectness(t, setup, leftJobID, rightJobID, 2*time.Minute, ldrWorkload)
+	VerifyCorrectness(c, t, setup, leftJobID, rightJobID, 2*time.Minute, ldrWorkload)
 }
 
 func TestLDROnNodeShutdown(
@@ -373,7 +373,7 @@ func TestLDROnNodeShutdown(
 	}
 
 	monitor.Wait()
-	VerifyCorrectness(t, setup, leftJobID, rightJobID, 5*time.Minute, ldrWorkload)
+	VerifyCorrectness(c, t, setup, leftJobID, rightJobID, 5*time.Minute, ldrWorkload)
 }
 
 // TestLDROnNetworkPartition aims to see what happens when both clusters
@@ -432,7 +432,7 @@ func TestLDROnNetworkPartition(
 	t.L().Printf("Nodes reconnected. Waiting for workload to complete")
 
 	monitor.Wait()
-	VerifyCorrectness(t, setup, leftJobID, rightJobID, 5*time.Minute, ldrWorkload)
+	VerifyCorrectness(c, t, setup, leftJobID, rightJobID, 5*time.Minute, ldrWorkload)
 }
 
 type ldrJobInfo struct {
@@ -618,7 +618,18 @@ func setupLDR(
 	return leftJobID, rightJobID
 }
 
+func checkDLQTableIsEmpty(t test.Test, db *sqlutils.SQLRunner, dbName, tableName string) {
+	dlqNameQuery := fmt.Sprintf("SELECT table_name FROM [SHOW TABLES FROM %s] where schema_name = 'crdb_replication' and table_name like '%%%s%%'", dbName, tableName)
+	var dlqName string
+	db.QueryRow(t, dlqNameQuery).Scan(&tableName)
+	query := fmt.Sprintf("SELECT count(*) FROM %s", dlqName)
+	var numRows int
+	db.QueryRow(t, query).Scan(&numRows)
+	require.Zero(t, numRows, "dlq table not empty")
+}
+
 func VerifyCorrectness(
+	c cluster.Cluster,
 	t test.Test,
 	setup multiClusterSetup,
 	leftJobID, rightJobID int,
@@ -631,14 +642,22 @@ func VerifyCorrectness(
 	waitForReplicatedTimeToReachTimestamp(t, leftJobID, setup.left.db, getLogicalDataReplicationJobInfo, waitTime, now)
 	waitForReplicatedTimeToReachTimestamp(t, rightJobID, setup.right.db, getLogicalDataReplicationJobInfo, waitTime, now)
 
-	// TODO(ssd): Decide how we want to fingerprint
-	// this table while we are using in-row storage
-	// for crdb_internal_mvcc_timestamp.
-	var leftCount, rightCount int
-	selectQuery := fmt.Sprintf("SELECT count(1) FROM %s.%s", ldrWorkload.dbName, ldrWorkload.tableName)
-	setup.left.sysSQL.QueryRow(t, selectQuery).Scan(&leftCount)
-	setup.right.sysSQL.QueryRow(t, selectQuery).Scan(&rightCount)
-	require.Equal(t, leftCount, rightCount)
+	checkDLQTableIsEmpty(t, setup.left.sysSQL, ldrWorkload.dbName, ldrWorkload.tableName)
+	checkDLQTableIsEmpty(t, setup.right.sysSQL, ldrWorkload.dbName, ldrWorkload.tableName)
+
+	m := c.NewMonitor(context.Background(), setup.CRDBNodes())
+	var leftFingerprint, rightFingerprint [][]string
+	queryStmt := fmt.Sprintf("SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE %s.%s WITH EXCLUDE COLUMNS = ('crdb_replication_origin_timestamp')", ldrWorkload.dbName, ldrWorkload.tableName)
+	m.Go(func(ctx context.Context) error {
+		leftFingerprint = setup.left.sysSQL.QueryStr(t, queryStmt)
+		return nil
+	})
+	m.Go(func(ctx context.Context) error {
+		rightFingerprint = setup.right.sysSQL.QueryStr(t, queryStmt)
+		return nil
+	})
+	m.Wait()
+	require.Equal(t, leftFingerprint, rightFingerprint)
 }
 
 func getDebugZips(ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup) {
