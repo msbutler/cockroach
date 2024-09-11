@@ -15,6 +15,7 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/errors"
 )
@@ -118,9 +119,16 @@ func (b *kvBuf) fits(
 	if needed > remaining {
 		return false
 	}
+	prevAccounted := sz(acc.Used())
 	if err := acc.Grow(ctx, int64(needed)); err != nil {
+		postGrowSize := sz(acc.Used())
+		log.Infof(ctx, "kvBuf.fits: failed to grow account from %s to %s: %v",
+			prevAccounted, postGrowSize, err)
 		return false
 	}
+	postGrowSize := sz(acc.Used())
+	log.Infof(ctx, "kvBuf.fits: grew account from %s to %s",
+		prevAccounted, postGrowSize)
 	// We've reserved the additional space so re-alloc and copy over existing data
 	// as needed.
 	if entryGrow > 0 {

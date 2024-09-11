@@ -416,6 +416,7 @@ func ingestKvs(
 
 	minBufferSize, maxBufferSize = importBufferConfigSizes(flowCtx.Cfg.Settings,
 		false /* isPKAdder */)
+
 	indexAdder, err := flowCtx.Cfg.BulkAdder(ctx, flowCtx.Cfg.DB.KV(), writeTS, kvserverbase.BulkAdderOptions{
 		Name:                     indexAdderName,
 		DisallowShadowingBelow:   writeTS,

@@ -100,6 +100,7 @@ func MakeBulkAdder(
 	if opts.MaxBufferSize == nil {
 		opts.MaxBufferSize = func() int64 { return 128 << 20 }
 	}
+	log.Infof(ctx, "making bulk monitor with max buffer size %s", sz(opts.MaxBufferSize()))
 
 	b := &BufferingAdder{
 		name:        opts.Name,
@@ -209,10 +210,14 @@ func (b *BufferingAdder) Add(ctx context.Context, key roachpb.Key, value []byte)
 	// by unused entries cap -- reset both. We'll take a slight hit re-alloc'ing
 	// but will hopefully waste less buffer space.
 	if b.underfill > 1<<30 {
+		currentAccSize := b.memAcc.Used()
 		b.memAcc.Shrink(ctx, int64(b.curBuf.MemSize()))
 		b.curBuf.entries = nil
 		b.curBuf.slab = nil
 		b.underfill = 0
+		postShrinkSize := b.memAcc.Used()
+		log.Infof(ctx, "%s adder resetting buffer memory usage from %s to %s",
+			b.name, sz(currentAccSize), sz(postShrinkSize))
 	}
 
 	// At this point we've flushed the buffer which implies that the slab and
