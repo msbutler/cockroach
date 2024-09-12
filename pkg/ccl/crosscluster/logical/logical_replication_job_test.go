@@ -807,6 +807,10 @@ func TestPreviouslyInterestingTables(t *testing.T) {
 			schema: `CREATE TABLE rand_table (pk INT PRIMARY KEY)`,
 			useUDF: true,
 		},
+		{
+			name:   "corruption",
+			schema: `CREATE TABLE rand_table ("\\xd2col1_0" INT2 NOT NULL, col1_1 UUID NOT NULL, "c😳ol 1/_2" BIT, "col""1_3" INET NOT NULL, col1_4 REGCLASS NULL, col1_5 INT2 NOT NULL AS (abs("\\xd2col1_0")) VIRTUAL, PRIMARY KEY ("\\xd2col1_0" DESC, col1_1 ASC, col1_5 DESC), UNIQUE ("c😳ol 1/_2"))`,
+		},
 	}
 
 	baseTableName := "rand_table"
