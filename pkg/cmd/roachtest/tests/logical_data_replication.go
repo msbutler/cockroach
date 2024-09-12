@@ -178,6 +178,8 @@ func TestLDRBasic(ctx context.Context, t test.Test, c cluster.Cluster, setup mul
 
 	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload)
 
+	checkDLQTableIsEmpty(t, setup.left.sysSQL, ldrWorkload.dbName, ldrWorkload.tableName)
+
 	// Setup latency verifiers
 	maxExpectedLatency := 2 * time.Minute
 	llv := makeLatencyVerifier("ldr-left", 0, maxExpectedLatency, t.L(),
@@ -619,7 +621,7 @@ func setupLDR(
 }
 
 func checkDLQTableIsEmpty(t test.Test, db *sqlutils.SQLRunner, dbName, tableName string) {
-	dlqNameQuery := fmt.Sprintf("SELECT table_name FROM [SHOW TABLES FROM %s] where schema_name = 'crdb_replication' and table_name like '%%%s%%'", dbName, tableName)
+	dlqNameQuery := fmt.Sprintf("SELECT table_name FROM [SHOW TABLES FROM %s] where schema_name = 'crdb_replication' and table_name like '%%_%s'", dbName, tableName)
 	var dlqName string
 	db.QueryRow(t, dlqNameQuery).Scan(&tableName)
 	query := fmt.Sprintf("SELECT count(*) FROM %s", dlqName)

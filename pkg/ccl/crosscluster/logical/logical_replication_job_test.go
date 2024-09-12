@@ -291,11 +291,18 @@ func TestLogicalStreamIngestionJob(t *testing.T) {
 	WaitUntilReplicatedTime(t, now, dbA, jobAID)
 	WaitUntilReplicatedTime(t, now, dbB, jobBID)
 
+	//tableName := "tab"
+	dbName := "defaultdb"
+	dlqNameQuery := fmt.Sprintf("SELECT table_name FROM [SHOW TABLES FROM %s]", dbName)
+	dlqNames := dbA.QueryStr(t, dlqNameQuery)
+
 	expectedRows := [][]string{
 		{"1", "goodbye, again"},
 		{"2", "potato"},
 		{"3", "celeriac"},
 	}
+	require.Equal(t, expectedRows, dlqNames)
+
 	dbA.CheckQueryResults(t, "SELECT * from a.tab", expectedRows)
 	dbB.CheckQueryResults(t, "SELECT * from b.tab", expectedRows)
 
