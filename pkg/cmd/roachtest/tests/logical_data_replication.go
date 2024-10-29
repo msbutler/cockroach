@@ -63,9 +63,9 @@ func (ycsb ycsbWorkload) runDriver(
 }
 
 type LDRWorkload struct {
-	workload  streamingWorkload
-	dbName    string
-	tableName string
+	workload   streamingWorkload
+	dbName     string
+	tableNames []string
 }
 
 func registerLogicalDataReplicationTests(r registry.Registry) {
@@ -82,8 +82,8 @@ func registerLogicalDataReplicationTests(r registry.Registry) {
 					spec.VolumeSize(100),
 				},
 			},
-			mode: ModeImmediate,
-			run:  TestLDRBasic,
+			ldrConfig: ldrConfig{mode: ModeValidated},
+			run:       TestLDRBasic,
 		},
 		{
 			name: "ldr/kv0/workload=both/basic/validated",
@@ -97,8 +97,8 @@ func registerLogicalDataReplicationTests(r registry.Registry) {
 					spec.VolumeSize(100),
 				},
 			},
-			mode: ModeValidated,
-			run:  TestLDRBasic,
+			ldrConfig: ldrConfig{mode: ModeValidated},
+			run:       TestLDRBasic,
 		},
 		{
 			name: "ldr/kv0/workload=both/update_heavy/immediate",
@@ -112,8 +112,8 @@ func registerLogicalDataReplicationTests(r registry.Registry) {
 					spec.VolumeSize(100),
 				},
 			},
-			mode: ModeImmediate,
-			run:  TestLDRUpdateHeavy,
+			ldrConfig: ldrConfig{mode: ModeValidated},
+			run:       TestLDRUpdateHeavy,
 		},
 		{
 			name: "ldr/kv0/workload=both/update_heavy/validated",
@@ -127,8 +127,8 @@ func registerLogicalDataReplicationTests(r registry.Registry) {
 					spec.VolumeSize(100),
 				},
 			},
-			mode: ModeValidated,
-			run:  TestLDRUpdateHeavy,
+			ldrConfig: ldrConfig{mode: ModeValidated},
+			run:       TestLDRUpdateHeavy,
 		},
 		{
 			name: "ldr/kv0/workload=both/shutdown_node",
@@ -172,6 +172,24 @@ func registerLogicalDataReplicationTests(r registry.Registry) {
 			},
 			run: TestLDRSchemaChange,
 		},
+		{
+			name: "ldr/tpcc",
+			clusterSpec: multiClusterSpec{
+				leftNodes:  3,
+				rightNodes: 3,
+				clusterOpts: []spec.Option{
+					spec.CPU(8),
+					spec.WorkloadNode(),
+					spec.WorkloadNodeCPU(8),
+					spec.VolumeSize(100),
+				},
+			},
+			ldrConfig: ldrConfig{
+				unidrectional:      true,
+				initialScanTimeout: 5 * time.Hour,
+			},
+			run: TestLDRTPCC,
+		},
 	}
 
 	for _, sp := range specs {
@@ -195,14 +213,14 @@ func registerLogicalDataReplicationTests(r registry.Registry) {
 				}
 				setup, cleanup := mc.Start(ctx, t)
 				defer cleanup()
-				sp.run(ctx, t, c, setup, sp.mode)
+				sp.run(ctx, t, c, setup, sp.ldrConfig)
 			},
 		})
 	}
 }
 
 func TestLDRBasic(
-	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, mode mode,
+	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, ldrConfig ldrConfig,
 ) {
 	duration := 15 * time.Minute
 	initRows := 1000
@@ -221,11 +239,11 @@ func TestLDRBasic(
 			maxBlockBytes:           maxBlockBytes,
 			initRows:                initRows,
 			initWithSplitAndScatter: !c.IsLocal()},
-		dbName:    "kv",
-		tableName: "kv",
+		dbName:     "kv",
+		tableNames: []string{"kv"},
 	}
 
-	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload, mode)
+	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload, ldrConfig)
 	workloadDoneCh := make(chan struct{})
 	monitor := c.NewMonitor(ctx, setup.CRDBNodes())
 	validateLatency := setupLatencyVerifiers(ctx, t, c, monitor, leftJobID, rightJobID, setup, workloadDoneCh, 2*time.Minute)
@@ -241,7 +259,7 @@ func TestLDRBasic(
 }
 
 func TestLDRSchemaChange(
-	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, mode mode,
+	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, ldrConfig ldrConfig,
 ) {
 	duration := 15 * time.Minute
 	if c.IsLocal() {
@@ -255,11 +273,11 @@ func TestLDRSchemaChange(
 			maxBlockBytes:           1024,
 			initRows:                1000,
 			initWithSplitAndScatter: true},
-		dbName:    "kv",
-		tableName: "kv",
+		dbName:     "kv",
+		tableNames: []string{"kv"},
 	}
 
-	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload, mode)
+	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload, ldrConfig)
 
 	workloadDoneCh := make(chan struct{})
 	monitor := c.NewMonitor(ctx, setup.CRDBNodes())
@@ -272,15 +290,15 @@ func TestLDRSchemaChange(
 
 	// Run allowlisted schema changes on the replicated table on both the left
 	// and right sides.
-	setup.left.sysSQL.Exec(t, fmt.Sprintf("CREATE INDEX idx_left ON %s.%s(v, k)", ldrWorkload.dbName, ldrWorkload.tableName))
-	setup.right.sysSQL.Exec(t, fmt.Sprintf("CREATE INDEX idx_right ON %s.%s(v, k)", ldrWorkload.dbName, ldrWorkload.tableName))
+	setup.left.sysSQL.Exec(t, fmt.Sprintf("CREATE INDEX idx_left ON %s.%s(v, k)", ldrWorkload.dbName, ldrWorkload.tableNames[0]))
+	setup.right.sysSQL.Exec(t, fmt.Sprintf("CREATE INDEX idx_right ON %s.%s(v, k)", ldrWorkload.dbName, ldrWorkload.tableNames[0]))
 	setup.left.sysSQL.Exec(t, "DROP INDEX idx_left")
 	setup.right.sysSQL.Exec(t, "DROP INDEX idx_right")
 
 	// Verify that a non-allowlisted schema change fails.
 	setup.left.sysSQL.ExpectErr(t,
 		"schema change is disallowed on table .* because it is referenced by one or more logical replication jobs",
-		fmt.Sprintf("ALTER TABLE %s.%s ADD COLUMN not_null_col INT NOT NULL DEFAULT 10", ldrWorkload.dbName, ldrWorkload.tableName),
+		fmt.Sprintf("ALTER TABLE %s.%s ADD COLUMN not_null_col INT NOT NULL DEFAULT 10", ldrWorkload.dbName, ldrWorkload.tableNames[0]),
 	)
 
 	monitor.Wait()
@@ -288,8 +306,51 @@ func TestLDRSchemaChange(
 	VerifyCorrectness(ctx, c, t, setup, leftJobID, rightJobID, 2*time.Minute, ldrWorkload)
 }
 
+func TestLDRTPCC(
+	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, ldrConfig ldrConfig,
+) {
+	duration := 10 * time.Minute
+	warehouses := 10
+	if c.IsLocal() {
+		duration = 3 * time.Minute
+		warehouses = 10
+	}
+
+	leftWorkload := LDRWorkload{
+		workload: replicateTPCC{
+			warehouses: warehouses,
+			duration:   duration,
+		},
+		dbName:     "tpcc",
+		tableNames: []string{"customer", "district", "history", "item", "new_order", "order_line", "order", "stock", "warehouse"},
+	}
+
+	// Init the right cluster manually, as we init it without any data.
+	c.Run(ctx,
+		option.WithNodes(setup.workloadNode),
+		fmt.Sprintf("./cockroach workload init tpcc --warehouses=1 --fks=false {pgurl:%d:system}", setup.right.nodes[0]))
+	_, rightJobID := setupLDR(ctx, t, c, setup, leftWorkload, ldrConfig)
+
+	workloadDoneCh := make(chan struct{})
+	maxExpectedLatency := 3 * time.Minute
+	monitor := c.NewMonitor(ctx, setup.CRDBNodes())
+	validateLatency := setupLatencyVerifiers(ctx, t, c, monitor, 0, rightJobID, setup, workloadDoneCh, maxExpectedLatency)
+
+	monitor.Go(func(ctx context.Context) error {
+		defer close(workloadDoneCh)
+		// Run workload on both sides to induce conflicts.
+		return c.RunE(ctx, option.WithNodes(setup.workloadNode), leftWorkload.workload.sourceRunCmd("system", setup.CRDBNodes()))
+	})
+
+	monitor.Wait()
+	validateLatency()
+	// TODO (msbutler): currently fails fingerprint bc tpcc cannot be initialized
+	// with empty db, and we're running a unidirectional stream.
+	VerifyCorrectness(ctx, c, t, setup, 0, rightJobID, 2*time.Minute, leftWorkload)
+}
+
 func TestLDRUpdateHeavy(
-	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, mode mode,
+	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, ldrConfig ldrConfig,
 ) {
 
 	duration := 10 * time.Minute
@@ -304,11 +365,11 @@ func TestLDRUpdateHeavy(
 			initRows:         1000,
 			initSplits:       1000,
 		},
-		dbName:    "ycsb",
-		tableName: "usertable",
+		dbName:     "ycsb",
+		tableNames: []string{"usertable"},
 	}
 
-	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload, mode)
+	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload, ldrConfig)
 
 	workloadDoneCh := make(chan struct{})
 	maxExpectedLatency := 3 * time.Minute
@@ -326,7 +387,7 @@ func TestLDRUpdateHeavy(
 }
 
 func TestLDROnNodeShutdown(
-	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, mode mode,
+	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, ldrConfig ldrConfig,
 ) {
 
 	duration := 10 * time.Minute
@@ -341,11 +402,11 @@ func TestLDROnNodeShutdown(
 			maxBlockBytes:           1024,
 			initRows:                1000,
 			initWithSplitAndScatter: true},
-		dbName:    "kv",
-		tableName: "kv",
+		dbName:     "kv",
+		tableNames: []string{"kv"},
 	}
 
-	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload, mode)
+	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload, ldrConfig)
 
 	findNonGatewayNode := func(info *clusterInfo, rng *rand.Rand) int {
 		for {
@@ -421,7 +482,7 @@ func TestLDROnNodeShutdown(
 // aim to keep the workload going on both sides and wait for reconciliation
 // once the network partition has completed
 func TestLDROnNetworkPartition(
-	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, mode mode,
+	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, ldrConfig ldrConfig,
 ) {
 	duration := 10 * time.Minute
 	if c.IsLocal() {
@@ -435,11 +496,11 @@ func TestLDROnNetworkPartition(
 			maxBlockBytes:           1024,
 			initRows:                1000,
 			initWithSplitAndScatter: true},
-		dbName:    "kv",
-		tableName: "kv",
+		dbName:     "kv",
+		tableNames: []string{"kv"},
 	}
 
-	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload, mode)
+	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, ldrWorkload, ldrConfig)
 
 	monitor := c.NewMonitor(ctx, setup.CRDBNodes())
 	monitor.Go(func(ctx context.Context) error {
@@ -501,8 +562,8 @@ func getLogicalDataReplicationJobInfo(db *gosql.DB, jobID int) (jobInfo, error) 
 type ldrTestSpec struct {
 	name        string
 	clusterSpec multiClusterSpec
-	run         func(context.Context, test.Test, cluster.Cluster, multiClusterSetup, mode)
-	mode        mode
+	run         func(context.Context, test.Test, cluster.Cluster, multiClusterSetup, ldrConfig)
+	ldrConfig   ldrConfig
 }
 
 type mode int
@@ -632,52 +693,96 @@ func (mc *multiCluster) Start(ctx context.Context, t test.Test) (multiClusterSet
 		}
 }
 
+type ldrConfig struct {
+	unidrectional      bool
+	mode               mode
+	initialScanTimeout time.Duration
+}
+
 func setupLDR(
 	ctx context.Context,
 	t test.Test,
 	c cluster.Cluster,
 	setup multiClusterSetup,
 	ldrWorkload LDRWorkload,
-	mode mode,
+	ldrConfig ldrConfig,
 ) (int, int) {
+	if !ldrConfig.unidrectional {
+		c.Run(ctx,
+			option.WithNodes(setup.workloadNode),
+			ldrWorkload.workload.sourceInitCmd("system", setup.right.nodes))
+	}
 	c.Run(ctx,
 		option.WithNodes(setup.workloadNode),
 		ldrWorkload.workload.sourceInitCmd("system", setup.left.nodes))
-	c.Run(ctx,
-		option.WithNodes(setup.workloadNode),
-		ldrWorkload.workload.sourceInitCmd("system", setup.right.nodes))
 
-	dbName, tableName := ldrWorkload.dbName, ldrWorkload.tableName
+	tableNamesToStr := func(dbname string, tableNames []string) string {
+		var tableNamesStr string
+		for i, tableName := range tableNames {
+			if i == 0 {
+				tableNamesStr = fmt.Sprintf("(%s.%s", dbname, tableName)
+			} else {
+				tableNamesStr = fmt.Sprintf("%s, %s.%s", tableNamesStr, dbname, tableName)
+			}
+		}
+		tableNamesStr = fmt.Sprintf("%s)", tableNamesStr)
+		return tableNamesStr
+	}
+
+	dbName, tableNamesStr := ldrWorkload.dbName, tableNamesToStr(ldrWorkload.dbName, ldrWorkload.tableNames)
 
 	startLDR := func(targetDB *sqlutils.SQLRunner, sourceURL string) int {
 		options := ""
-		if mode != Default {
-			options = fmt.Sprintf("WITH mode='%s'", mode)
+		if ldrConfig.mode != Default {
+			options = fmt.Sprintf("WITH mode='%s'", ldrConfig.mode)
 		}
 		targetDB.Exec(t, fmt.Sprintf("USE %s", dbName))
+		ldrCmd := fmt.Sprintf("CREATE LOGICAL REPLICATION STREAM FROM TABLES %s ON $1 INTO TABLES %s %s", tableNamesStr, tableNamesStr, options)
 		r := targetDB.QueryRow(t,
-			fmt.Sprintf("CREATE LOGICAL REPLICATION STREAM FROM TABLE %s ON $1 INTO TABLE %s %s", tableName, tableName, options),
+			ldrCmd,
 			sourceURL,
 		)
 		var jobID int
 		r.Scan(&jobID)
 		return jobID
 	}
-
-	leftJobID := startLDR(setup.left.sysSQL, setup.right.PgURLForDatabase(dbName))
 	rightJobID := startLDR(setup.right.sysSQL, setup.left.PgURLForDatabase(dbName))
+	var leftJobID int
+	if !ldrConfig.unidrectional {
+		leftJobID = startLDR(setup.left.sysSQL, setup.right.PgURLForDatabase(dbName))
+	}
 
 	// TODO(ssd): We wait for the replicated time to
 	// avoid starting the workload here until we
 	// have the behaviour around initial scans
 	// sorted out.
-	waitForReplicatedTime(t, leftJobID, setup.left.db, getLogicalDataReplicationJobInfo, 2*time.Minute)
-	waitForReplicatedTime(t, rightJobID, setup.right.db, getLogicalDataReplicationJobInfo, 2*time.Minute)
-
+	initialScanTimeout := 2 * time.Minute
+	if ldrConfig.initialScanTimeout != 0 {
+		initialScanTimeout = ldrConfig.initialScanTimeout
+	}
+	initScanMon := c.NewMonitor(ctx, setup.CRDBNodes())
+	approxInitScanStart := timeutil.Now()
+	t.L().Printf("Waiting for initial scan(s) to complete")
+	if !ldrConfig.unidrectional {
+		initScanMon.Go(func(ctx context.Context) error {
+			waitForReplicatedTime(t, leftJobID, setup.left.db, getLogicalDataReplicationJobInfo, initialScanTimeout)
+			t.L().Printf("Initial scan for left job completed in %s", timeutil.Since(approxInitScanStart))
+			return nil
+		})
+	}
+	initScanMon.Go(func(ctx context.Context) error {
+		waitForReplicatedTime(t, rightJobID, setup.right.db, getLogicalDataReplicationJobInfo, initialScanTimeout)
+		t.L().Printf("Initial scan for right job completed in %s", timeutil.Since(approxInitScanStart))
+		return nil
+	})
+	initScanMon.Wait()
 	t.L().Printf("LDR Setup complete")
 	return leftJobID, rightJobID
 }
 
+// setupLatencyVerifiers sets up latency verifiers for the left and right ldr
+// jobs. If the left job ID is 0, then this function assumes the left job does
+// not exist.
 func setupLatencyVerifiers(
 	ctx context.Context,
 	t test.Test,
@@ -688,6 +793,7 @@ func setupLatencyVerifiers(
 	workloadDoneCh chan struct{},
 	maxExpectedLatency time.Duration,
 ) func() {
+
 	llv := makeLatencyVerifier("ldr-left", 0, maxExpectedLatency, t.L(),
 		getLogicalDataReplicationJobInfo, t.Status, false /* tolerateErrors */)
 	defer llv.maybeLogLatencyHist()
@@ -699,6 +805,10 @@ func setupLatencyVerifiers(
 	debugZipFetcher := &sync.Once{}
 
 	mon.Go(func(ctx context.Context) error {
+		if leftJobID == 0 {
+			// A left job only exists for bidirectional tests.
+			return nil
+		}
 		if err := llv.pollLatencyUntilJobSucceeds(ctx, setup.left.db, leftJobID, time.Second, workloadDoneCh); err != nil {
 			debugZipFetcher.Do(func() { getDebugZips(ctx, t, c, setup) })
 			return err
@@ -714,7 +824,9 @@ func setupLatencyVerifiers(
 	})
 	return func() {
 		rlv.assertValid(t)
-		llv.assertValid(t)
+		if leftJobID > 0 {
+			llv.assertValid(t)
+		}
 	}
 }
 
@@ -729,25 +841,28 @@ func VerifyCorrectness(
 ) {
 	t.L().Printf("Verifying left and right tables")
 	now := timeutil.Now()
-
-	waitForReplicatedTimeToReachTimestamp(t, leftJobID, setup.left.db, getLogicalDataReplicationJobInfo, waitTime, now)
+	if leftJobID > 0 {
+		// A left job only exists for bidirectional tests.
+		waitForReplicatedTimeToReachTimestamp(t, leftJobID, setup.left.db, getLogicalDataReplicationJobInfo, waitTime, now)
+		require.NoError(t, replicationtestutils.CheckEmptyDLQs(ctx, setup.left.db, ldrWorkload.dbName))
+	}
 	waitForReplicatedTimeToReachTimestamp(t, rightJobID, setup.right.db, getLogicalDataReplicationJobInfo, waitTime, now)
-	require.NoError(t, replicationtestutils.CheckEmptyDLQs(ctx, setup.left.db, ldrWorkload.dbName))
 	require.NoError(t, replicationtestutils.CheckEmptyDLQs(ctx, setup.right.db, ldrWorkload.dbName))
-
-	m := c.NewMonitor(context.Background(), setup.CRDBNodes())
-	var leftFingerprint, rightFingerprint [][]string
-	queryStmt := fmt.Sprintf("SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE %s.%s", ldrWorkload.dbName, ldrWorkload.tableName)
-	m.Go(func(ctx context.Context) error {
-		leftFingerprint = setup.left.sysSQL.QueryStr(t, queryStmt)
-		return nil
-	})
-	m.Go(func(ctx context.Context) error {
-		rightFingerprint = setup.right.sysSQL.QueryStr(t, queryStmt)
-		return nil
-	})
-	m.Wait()
-	require.Equal(t, leftFingerprint, rightFingerprint)
+	for _, tableName := range ldrWorkload.tableNames {
+		m := c.NewMonitor(context.Background(), setup.CRDBNodes())
+		var leftFingerprint, rightFingerprint [][]string
+		queryStmt := fmt.Sprintf("SHOW EXPERIMENTAL_FINGERPRINTS FROM TABLE %s.%s", ldrWorkload.dbName, tableName)
+		m.Go(func(ctx context.Context) error {
+			leftFingerprint = setup.left.sysSQL.QueryStr(t, queryStmt)
+			return nil
+		})
+		m.Go(func(ctx context.Context) error {
+			rightFingerprint = setup.right.sysSQL.QueryStr(t, queryStmt)
+			return nil
+		})
+		m.Wait()
+		require.Equal(t, leftFingerprint, rightFingerprint)
+	}
 }
 
 func getDebugZips(ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup) {
