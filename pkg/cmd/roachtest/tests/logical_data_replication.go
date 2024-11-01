@@ -310,7 +310,7 @@ func TestLDRTPCC(
 	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, ldrConfig ldrConfig,
 ) {
 	duration := 10 * time.Minute
-	warehouses := 10
+	warehouses := 100
 	if c.IsLocal() {
 		duration = 3 * time.Minute
 		warehouses = 10
