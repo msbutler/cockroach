@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl"
 	"github.com/cockroachdb/cockroach/pkg/ccl/crosscluster"
 	"github.com/cockroachdb/cockroach/pkg/ccl/crosscluster/physical"
 	"github.com/cockroachdb/cockroach/pkg/ccl/crosscluster/streamclient"
@@ -253,6 +254,41 @@ func (r *logicalReplicationResumer) ingest(
 		return err
 	}
 
+	// We now attempt to create initial splits. We currently do
+	// this once during initial planning to avoid re-splitting on
+	// resume since it isn't clear to us at the moment whether
+	// re-splitting is always going to be useful.
+	if !progress.InitialScanComplete {
+		var rekeys []execinfrapb.TableRekey
+		for srcID, destInfo := range planInfo.destTableBySrcID {
+			newDescBytes, err := protoutil.Marshal(destInfo.proto)
+			if err != nil {
+				return errors.NewAssertionErrorWithWrappedErrf(err,
+					"marshaling descriptor")
+			}
+			rekeys = append(rekeys, execinfrapb.TableRekey{
+				OldID:   uint32(srcID),
+				NewDesc: newDescBytes,
+			})
+		}
+
+		codec := jobExecCtx.ExtendedEvalContext().Codec
+		splitter := &crosscluster.DBSplitAndScatter{DB: execCfg.DB}
+		r.updateRunningStatus(ctx, redact.Sprintf("creating %d initial splits based on the source cluster's topology", len(planInfo.splitPoints)))
+		rekeyer, err := backupccl.MakeKeyRewriterFromRekeys(codec,
+			nil /* tableRekeys */, nil, /* tenantRekeys */
+			false /* restoreTenantFromStream */)
+		if err != nil {
+			return err
+		}
+		// TODO(msbutler): consider not scattering during LDR. These ranges may not be empty.
+		if err := crosscluster.CreateInitialSplits(ctx, codec, splitter, planInfo.splitPoints, len(planInfo.initialDestinationNodes), rekeyer); err != nil {
+			return err
+		} else {
+			log.Infof(ctx, "initial splits already complete")
+		}
+	}
+
 	err = ctxgroup.GoAndWait(ctx, execPlan, replanner, startHeartbeat)
 	if errors.Is(err, sql.ErrPlanChanged) {
 		metrics.ReplanCount.Inc(1)
@@ -296,6 +332,10 @@ type logicalReplicationPlanInfo struct {
 	sourceSpans      []roachpb.Span
 	streamAddress    []string
 	destTableBySrcID map[descpb.ID]dstTableMetadata
+
+	// Used for initial split
+	splitPoints             []roachpb.Key
+	initialDestinationNodes []base.SQLInstanceID
 }
 
 func makeLogicalReplicationPlanner(
@@ -352,6 +392,7 @@ func (p *logicalReplicationPlanner) generatePlanImpl(
 	}
 	info.sourceSpans = plan.SourceSpans
 	info.streamAddress = plan.Topology.StreamAddresses()
+	info.splitPoints = plan.SourceSplitPoints
 
 	var defaultFnOID oid.Oid
 	if defaultFnID := payload.DefaultConflictResolution.FunctionId; defaultFnID != 0 {
@@ -360,6 +401,7 @@ func (p *logicalReplicationPlanner) generatePlanImpl(
 
 	crossClusterResolver := crosscluster.MakeCrossClusterTypeResolver(plan.SourceTypes)
 	tableMetadataByDestID := make(map[int32]execinfrapb.TableReplicationMetadata)
+
 	if err := sql.DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, descriptors *descs.Collection) error {
 		for _, pair := range payload.ReplicationPairs {
 			srcTableDesc := plan.DescriptorMap[pair.SrcDescriptorID]
@@ -382,7 +424,6 @@ func (p *logicalReplicationPlanner) generatePlanImpl(
 			if err != nil {
 				return errors.Wrapf(err, "failed to look up schema descriptor for table %d", pair.DstDescriptorID)
 			}
-
 			var fnOID oid.Oid
 			if pair.DstFunctionID != 0 {
 				fnOID = catid.FuncIDToOID(catid.DescID(pair.DstFunctionID))
@@ -402,6 +443,7 @@ func (p *logicalReplicationPlanner) generatePlanImpl(
 				schema:   scDesc.GetName(),
 				table:    dstTableDesc.GetName(),
 				tableID:  descpb.ID(pair.DstDescriptorID),
+				proto:    dstTableDesc.DescriptorProto(),
 			}
 		}
 		return nil
@@ -413,6 +455,7 @@ func (p *logicalReplicationPlanner) generatePlanImpl(
 	if err != nil {
 		return nil, nil, info, err
 	}
+	info.initialDestinationNodes = nodes
 	destNodeLocalities, err := physical.GetDestNodeLocalities(ctx, dsp, nodes)
 	if err != nil {
 		return nil, nil, info, err
@@ -526,6 +569,7 @@ func (rh *rowHandler) handleRow(ctx context.Context, row tree.Datums) error {
 			prog.Checkpoint.ResolvedSpans = frontierResolvedSpans
 			if rh.replicatedTimeAtStart.Less(replicatedTime) {
 				prog.ReplicatedTime = replicatedTime
+				prog.InitialScanComplete = true
 				// The HighWater is for informational purposes
 				// only.
 				progress.Progress = &jobspb.Progress_HighWater{
