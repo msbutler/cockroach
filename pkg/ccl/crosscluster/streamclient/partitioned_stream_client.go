@@ -295,10 +295,11 @@ func (p *partitionedStreamClient) Complete(
 }
 
 type LogicalReplicationPlan struct {
-	Topology      Topology
-	SourceSpans   []roachpb.Span
-	DescriptorMap map[int32]descpb.TableDescriptor
-	SourceTypes   []*descpb.TypeDescriptor
+	Topology          Topology
+	SourceSpans       []roachpb.Span
+	SourceSplitPoints []roachpb.Key
+	DescriptorMap     map[int32]descpb.TableDescriptor
+	SourceTypes       []*descpb.TypeDescriptor
 }
 
 func (p *partitionedStreamClient) PlanLogicalReplication(
@@ -349,10 +350,11 @@ func (p *partitionedStreamClient) PlanLogicalReplication(
 	}
 
 	return LogicalReplicationPlan{
-		Topology:      topology,
-		SourceSpans:   streamSpec.TableSpans,
-		DescriptorMap: descMap,
-		SourceTypes:   sourceTypes,
+		Topology:          topology,
+		SourceSpans:       streamSpec.TableSpans,
+		DescriptorMap:     descMap,
+		SourceTypes:       sourceTypes,
+		SourceSplitPoints: streamSpec.SplitPoints,
 	}, nil
 }
 

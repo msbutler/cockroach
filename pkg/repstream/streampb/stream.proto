@@ -207,6 +207,7 @@ message ReplicationStreamSpec {
   repeated roachpb.Span table_spans = 4 [(gogoproto.nullable) = false];
   repeated cockroach.sql.sqlbase.TableDescriptor table_descriptors = 5 [(gogoproto.nullable) = false];
   repeated cockroach.sql.sqlbase.TypeDescriptor type_descriptors = 6 [(gogoproto.nullable) = false];
+  repeated bytes split_points = 7 [(gogoproto.casttype) =  "github.com/cockroachdb/cockroach/pkg/roachpb.Key"];
 }
 
 // StreamedSpanConfigEntry holds a span config update and its source side commit timestamp

@@ -214,6 +214,20 @@ func (r *replicationStreamManagerImpl) PlanLogicalReplication(
 			return nil, err
 		}
 	}
+	execConfig := r.evalCtx.Planner.ExecutorConfig().(*sql.ExecutorConfig)
+	rangeStartKeys := make([]roachpb.Key, 0, len(spans))
+	for _, initialSpan := range spans {
+		lazyIterator, err := execConfig.RangeDescIteratorFactory.NewLazyIterator(ctx, initialSpan, 100)
+		if err != nil {
+			return nil, err
+		}
+		for ; lazyIterator.Valid(); lazyIterator.Next() {
+			rangeStartKeys = append(rangeStartKeys, lazyIterator.CurRangeDescriptor().StartKey.AsRawKey())
+		}
+		if lazyIterator.Error() != nil {
+			return nil, err
+		}
+	}
 
 	spec, err := buildReplicationStreamSpec(ctx, r.evalCtx, tenID, false, spans,
 		int(ldrProcCount.Get(&r.evalCtx.Settings.SV)), useStreaksInLDR.Get(&r.evalCtx.Settings.SV))
@@ -223,6 +237,7 @@ func (r *replicationStreamManagerImpl) PlanLogicalReplication(
 	spec.TableDescriptors = tableDescs
 	spec.TableSpans = spans
 	spec.TypeDescriptors = typeDescriptors
+	spec.SplitPoints = rangeStartKeys
 	return spec, nil
 }
 
