@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobsprofiler"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/repstream/streampb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
@@ -34,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/retry"
-	"github.com/cockroachdb/cockroach/pkg/util/tracing"
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/logtags"
 	"github.com/cockroachdb/redact"
@@ -231,7 +229,7 @@ func startDistIngestion(
 	// re-splitting is always going to be useful.
 	if !streamProgress.InitialSplitComplete {
 		codec := execCtx.ExtendedEvalContext().Codec
-		splitter := &dbSplitAndScatter{db: execCtx.ExecCfg().DB}
+		splitter := &crosscluster.DBSplitAndScatter{DB: execCtx.ExecCfg().DB}
 		countNumOfSplitsAndScatters := func() int {
 			numSplitsAndScatters := 0
 			for _, partition := range planner.initialTopology.Partitions {
@@ -244,7 +242,17 @@ func startDistIngestion(
 		msg := redact.Sprintf("creating %d initial splits based on the source cluster's topology",
 			countNumOfSplitsAndScatters())
 		updateRunningStatus(ctx, ingestionJob, jobspb.CreatingInitialSplits, msg)
-		if err := createInitialSplits(ctx, codec, splitter, planner.initialTopology, len(planner.initialDestinationNodes), details.DestinationTenantID); err != nil {
+		rekeyer, err := backupccl.MakeKeyRewriterFromRekeys(codec,
+			nil /* tableRekeys */, []execinfrapb.TenantRekey{
+				{
+					OldID: planner.initialTopology.SourceTenantID,
+					NewID: details.DestinationTenantID,
+				}},
+			true /* restoreTenantFromStream */)
+		if err != nil {
+			return err
+		}
+		if err := crosscluster.CreateInitialSplits(ctx, codec, splitter, sortSpans(planner.initialTopology.Partitions), len(planner.initialDestinationNodes), rekeyer); err != nil {
 			return err
 		}
 	} else {
@@ -275,163 +283,6 @@ func sortSpans(partitions []streamclient.PartitionInfo) roachpb.Spans {
 	}
 	sort.Sort(spansToSort)
 	return spansToSort
-}
-
-// TODO(ssd): This is a duplicative with the split_and_scatter processor in
-// backupccl.
-type splitAndScatterer interface {
-	split(
-		ctx context.Context,
-		splitKey roachpb.Key,
-		expirationTime hlc.Timestamp,
-	) error
-
-	scatter(
-		ctx context.Context,
-		scatterKey roachpb.Key,
-	) error
-
-	now() hlc.Timestamp
-}
-
-type dbSplitAndScatter struct {
-	db *kv.DB
-}
-
-func (s *dbSplitAndScatter) split(
-	ctx context.Context, splitKey roachpb.Key, expirationTime hlc.Timestamp,
-) error {
-	return s.db.AdminSplit(ctx, splitKey, expirationTime)
-}
-
-func (s *dbSplitAndScatter) scatter(ctx context.Context, scatterKey roachpb.Key) error {
-	_, pErr := kv.SendWrapped(ctx, s.db.NonTransactionalSender(), &kvpb.AdminScatterRequest{
-		RequestHeader: kvpb.RequestHeaderFromSpan(roachpb.Span{
-			Key:    scatterKey,
-			EndKey: scatterKey.Next(),
-		}),
-		RandomizeLeases: true,
-		MaxSize:         1, // don't scatter non-empty ranges on resume.
-	})
-	return pErr.GoError()
-}
-
-func (s *dbSplitAndScatter) now() hlc.Timestamp {
-	return s.db.Clock().Now()
-}
-
-// createInitialSplits creates splits based on the given toplogy from the
-// source. Parallelize splits by first sorting all the partition spans, and then
-// sending an equal number of contiguous spans to split workers.
-//
-// The idea here is to use the information from the source cluster about
-// the distribution of the data to produce split points to help prevent
-// ingestion processors from pushing data into the same ranges during
-// the initial scan.
-func createInitialSplits(
-	ctx context.Context,
-	codec keys.SQLCodec,
-	splitter splitAndScatterer,
-	topology streamclient.Topology,
-	destNodeCount int,
-	destTenantID roachpb.TenantID,
-) error {
-	ctx, sp := tracing.ChildSpan(ctx, "physical.createInitialSplits")
-	defer sp.Finish()
-
-	rekeyer, err := backupccl.MakeKeyRewriterFromRekeys(codec,
-		nil /* tableRekeys */, []execinfrapb.TenantRekey{
-			{
-				OldID: topology.SourceTenantID,
-				NewID: destTenantID,
-			}},
-		true /* restoreTenantFromStream */)
-	if err != nil {
-		return err
-	}
-
-	grp := ctxgroup.WithContext(ctx)
-	sortedSpans := sortSpans(topology.Partitions)
-	splitWorkers := destNodeCount
-	spansPerWorker := len(sortedSpans) / splitWorkers
-	for i := 0; i < splitWorkers; i++ {
-		startIdx := i * spansPerWorker
-		endIdx := (i + 1) * spansPerWorker
-		workerSpans := sortedSpans[startIdx:endIdx]
-		if i == splitWorkers-1 {
-			// The last worker handles the remainder spans
-			workerSpans = sortedSpans[startIdx:]
-		}
-		grp.GoCtx(splitAndScatterWorker(workerSpans, rekeyer, splitter))
-	}
-	return grp.Wait()
-}
-
-// Spans are filled from left to right during the initial scan. Each might cover
-// many (10-100+) source ranges merged to a single span by PartitionSpans, that
-// could take multiple minutes to fill, so a span later in spans might be filled
-// until minutes or hours later than one earlier in spans. Thus we want to give
-// later splits longer enforcement times as we know that they may not be filled
-// for longer, and we do not want them being merged away before we fill them.
-const baseSplitExpiration = time.Hour * 6
-const extraExpirationPerSpan = time.Minute * 10
-const maxSplitExpiration = time.Hour * 24 * 7
-
-func splitAndScatterWorker(
-	spans []roachpb.Span, rekeyer *backupccl.KeyRewriter, splitter splitAndScatterer,
-) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
-		for spanNum, span := range spans {
-			startKey := span.Key.Clone()
-			splitKey, _, err := rekeyer.RewriteTenant(startKey)
-			if err != nil {
-				return err
-			}
-
-			// NOTE(ssd): EnsureSafeSplitKey called on an arbitrary
-			// key unfortunately results in many of our split keys
-			// mapping to the same key for workloads like TPCC where
-			// the schema of the table includes integers that will
-			// get erroneously treated as the column family length.
-			//
-			// Since the partitions are generated from a call to
-			// PartitionSpans on the source cluster, they should be
-			// aligned with the split points in the original cluster
-			// and thus should be valid split keys. But, we are
-			// opening ourselves up to replicating bad splits from
-			// the original cluster.
-			//
-			// if newSplitKey, err := keys.EnsureSafeSplitKey(splitKey); err != nil {
-			// 	// Ignore the error since keys such as
-			// 	// /Tenant/2/Table/13 is an OK start key but
-			// 	// returns an error.
-			// } else if len(newSplitKey) != 0 {
-			// 	splitKey = newSplitKey
-			// }
-			//
-			addedExpiration := time.Duration(spanNum) * extraExpirationPerSpan
-			if err := splitAndScatter(ctx, splitKey, splitter, addedExpiration); err != nil {
-				return err
-			}
-
-		}
-		return nil
-	}
-}
-
-func splitAndScatter(
-	ctx context.Context, splitAndScatterKey roachpb.Key, s splitAndScatterer, extra time.Duration,
-) error {
-	log.VInfof(ctx, 1, "splitting and scattering at %s", splitAndScatterKey)
-	expirationTime := s.now().AddDuration(min(baseSplitExpiration+extra, maxSplitExpiration))
-	if err := s.split(ctx, splitAndScatterKey, expirationTime); err != nil {
-		return err
-	}
-	if err := s.scatter(ctx, splitAndScatterKey); err != nil {
-		log.Warningf(ctx, "failed to scatter span starting at %s: %v",
-			splitAndScatterKey, err)
-	}
-	return nil
 }
 
 // makeReplicationFlowPlanner creates a replicationFlowPlanner and the initial physical plan.
