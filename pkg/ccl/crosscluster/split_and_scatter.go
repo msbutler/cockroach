@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl"
-	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -23,31 +22,31 @@ import (
 // TODO(ssd): This is a duplicative with the split_and_scatter processor in
 // backupccl.
 type SplitAndScatterer interface {
-	split(
+	Split(
 		ctx context.Context,
 		splitKey roachpb.Key,
 		expirationTime hlc.Timestamp,
 	) error
 
-	scatter(
+	Scatter(
 		ctx context.Context,
 		scatterKey roachpb.Key,
 	) error
 
-	now() hlc.Timestamp
+	Now() hlc.Timestamp
 }
 
 type DBSplitAndScatter struct {
 	DB *kv.DB
 }
 
-func (s *DBSplitAndScatter) split(
+func (s *DBSplitAndScatter) Split(
 	ctx context.Context, splitKey roachpb.Key, expirationTime hlc.Timestamp,
 ) error {
 	return s.DB.AdminSplit(ctx, splitKey, expirationTime)
 }
 
-func (s *DBSplitAndScatter) scatter(ctx context.Context, scatterKey roachpb.Key) error {
+func (s *DBSplitAndScatter) Scatter(ctx context.Context, scatterKey roachpb.Key) error {
 	_, pErr := kv.SendWrapped(ctx, s.DB.NonTransactionalSender(), &kvpb.AdminScatterRequest{
 		RequestHeader: kvpb.RequestHeaderFromSpan(roachpb.Span{
 			Key:    scatterKey,
@@ -59,7 +58,7 @@ func (s *DBSplitAndScatter) scatter(ctx context.Context, scatterKey roachpb.Key)
 	return pErr.GoError()
 }
 
-func (s *DBSplitAndScatter) now() hlc.Timestamp {
+func (s *DBSplitAndScatter) Now() hlc.Timestamp {
 	return s.DB.Clock().Now()
 }
 
@@ -73,9 +72,8 @@ func (s *DBSplitAndScatter) now() hlc.Timestamp {
 // the initial scan.
 func CreateInitialSplits(
 	ctx context.Context,
-	codec keys.SQLCodec,
 	splitter SplitAndScatterer,
-	sortedSpans roachpb.Spans,
+	sortedKeys []roachpb.Key,
 	destNodeCount int,
 	rekeyer *backupccl.KeyRewriter,
 ) error {
@@ -84,16 +82,16 @@ func CreateInitialSplits(
 
 	grp := ctxgroup.WithContext(ctx)
 	splitWorkers := destNodeCount
-	spansPerWorker := len(sortedSpans) / splitWorkers
+	spansPerWorker := len(sortedKeys) / splitWorkers
 	for i := 0; i < splitWorkers; i++ {
 		startIdx := i * spansPerWorker
 		endIdx := (i + 1) * spansPerWorker
-		workerSpans := sortedSpans[startIdx:endIdx]
+		workerKeys := sortedKeys[startIdx:endIdx]
 		if i == splitWorkers-1 {
 			// The last worker handles the remainder spans
-			workerSpans = sortedSpans[startIdx:]
+			workerKeys = sortedKeys[startIdx:]
 		}
-		grp.GoCtx(splitAndScatterWorker(workerSpans, rekeyer, splitter))
+		grp.GoCtx(splitAndScatterWorker(workerKeys, rekeyer, splitter))
 	}
 	return grp.Wait()
 }
@@ -109,12 +107,18 @@ const extraExpirationPerSpan = time.Minute * 10
 const maxSplitExpiration = time.Hour * 24 * 7
 
 func splitAndScatterWorker(
-	spans []roachpb.Span, rekeyer *backupccl.KeyRewriter, splitter SplitAndScatterer,
+	keys []roachpb.Key, rekeyer *backupccl.KeyRewriter, splitter SplitAndScatterer,
 ) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
-		for spanNum, span := range spans {
-			startKey := span.Key.Clone()
-			splitKey, _, err := rekeyer.RewriteTenant(startKey)
+		for spanNum, key := range keys {
+			rewriteKey := key.Clone()
+			var err error
+			var splitKey roachpb.Key
+			if rekeyer.FromSystemTenant() {
+				splitKey, _, err = rekeyer.RewriteTenant(rewriteKey)
+			} else {
+				splitKey, _, err = rekeyer.RewriteKey(rewriteKey, 0)
+			}
 			if err != nil {
 				return err
 			}
@@ -154,11 +158,11 @@ func splitAndScatter(
 	ctx context.Context, splitAndScatterKey roachpb.Key, s SplitAndScatterer, extra time.Duration,
 ) error {
 	log.VInfof(ctx, 1, "splitting and scattering at %s", splitAndScatterKey)
-	expirationTime := s.now().AddDuration(min(baseSplitExpiration+extra, maxSplitExpiration))
-	if err := s.split(ctx, splitAndScatterKey, expirationTime); err != nil {
+	expirationTime := s.Now().AddDuration(min(baseSplitExpiration+extra, maxSplitExpiration))
+	if err := s.Split(ctx, splitAndScatterKey, expirationTime); err != nil {
 		return err
 	}
-	if err := s.scatter(ctx, splitAndScatterKey); err != nil {
+	if err := s.Scatter(ctx, splitAndScatterKey); err != nil {
 		log.Warningf(ctx, "failed to scatter span starting at %s: %v",
 			splitAndScatterKey, err)
 	}

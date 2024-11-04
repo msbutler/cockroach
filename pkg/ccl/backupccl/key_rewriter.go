@@ -216,6 +216,10 @@ func MakeKeyRewriterPrefixIgnoringInterleaved(tableID descpb.ID, indexID descpb.
 	return keys.SystemSQLCodec.IndexPrefix(uint32(tableID), uint32(indexID))
 }
 
+func (kr *KeyRewriter) FromSystemTenant() bool {
+	return kr.fromSystemTenant
+}
+
 // RewriteTenant rewrites a tenant key.
 func (kr *KeyRewriter) RewriteTenant(key []byte) ([]byte, bool, error) {
 	return kr.rewriteTenant(key, false)

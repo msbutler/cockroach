@@ -13,6 +13,8 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/ccl/backupccl"
+	"github.com/cockroachdb/cockroach/pkg/ccl/crosscluster"
 	"github.com/cockroachdb/cockroach/pkg/ccl/crosscluster/streamclient"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
@@ -355,7 +357,7 @@ type testSplitter struct {
 	scatterErr func(key roachpb.Key) error
 }
 
-func (ts *testSplitter) split(_ context.Context, splitKey roachpb.Key, _ hlc.Timestamp) error {
+func (ts *testSplitter) Split(_ context.Context, splitKey roachpb.Key, _ hlc.Timestamp) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	ts.mu.splits = append(ts.mu.splits, splitKey)
@@ -365,7 +367,7 @@ func (ts *testSplitter) split(_ context.Context, splitKey roachpb.Key, _ hlc.Tim
 	return nil
 }
 
-func (ts *testSplitter) scatter(_ context.Context, scatterKey roachpb.Key) error {
+func (ts *testSplitter) Scatter(_ context.Context, scatterKey roachpb.Key) error {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	ts.mu.scatters = append(ts.mu.scatters, scatterKey)
@@ -375,7 +377,7 @@ func (ts *testSplitter) scatter(_ context.Context, scatterKey roachpb.Key) error
 	return nil
 }
 
-func (ts *testSplitter) now() hlc.Timestamp {
+func (ts *testSplitter) Now() hlc.Timestamp {
 	return hlc.Timestamp{}
 }
 
@@ -426,9 +428,18 @@ func TestCreateInitialSplits(t *testing.T) {
 		},
 	}
 
+	rekeyer, err := backupccl.MakeKeyRewriterFromRekeys(keys.SystemSQLCodec,
+		nil /* tableRekeys */, []execinfrapb.TenantRekey{
+			{
+				OldID: sourceTenantID,
+				NewID: destTenantID,
+			}},
+		true /* restoreTenantFromStream */)
+	require.NoError(t, err)
+
 	t.Run("rekeys before splitting", func(t *testing.T) {
 		ts := &testSplitter{}
-		err := createInitialSplits(ctx, keys.SystemSQLCodec, ts, topo, numDestnodes, destTenantID)
+		err := crosscluster.CreateInitialSplits(ctx, ts, sortStartKeys(topo.Partitions), numDestnodes, rekeyer)
 		require.NoError(t, err)
 		expectedSplitsAndScatters := make([]roachpb.Key, 0, len(outputSpans))
 		for _, sp := range outputSpans {
@@ -442,18 +453,18 @@ func TestCreateInitialSplits(t *testing.T) {
 
 	})
 	t.Run("split errors are fatal", func(t *testing.T) {
-		require.Error(t, createInitialSplits(ctx, keys.SystemSQLCodec, &testSplitter{
+		require.Error(t, crosscluster.CreateInitialSplits(ctx, &testSplitter{
 			splitErr: func(_ roachpb.Key) error {
 				return errors.New("test error")
 			},
-		}, topo, numDestnodes, destTenantID))
+		}, sortStartKeys(topo.Partitions), numDestnodes, rekeyer))
 	})
 	t.Run("ignores scatter errors", func(t *testing.T) {
-		require.NoError(t, createInitialSplits(ctx, keys.SystemSQLCodec, &testSplitter{
+		require.NoError(t, crosscluster.CreateInitialSplits(ctx, &testSplitter{
 			scatterErr: func(_ roachpb.Key) error {
 				return errors.New("test error")
 			},
-		}, topo, numDestnodes, destTenantID))
+		}, sortStartKeys(topo.Partitions), numDestnodes, rekeyer))
 	})
 }
 
@@ -473,6 +484,15 @@ func TestParallelInitialSplits(t *testing.T) {
 	numPartitions := rng.Intn(minSpans) + 1
 	numDestNodes := rng.Intn(minSpans) + 1
 
+	rekeyer, err := backupccl.MakeKeyRewriterFromRekeys(keys.SystemSQLCodec,
+		nil /* tableRekeys */, []execinfrapb.TenantRekey{
+			{
+				OldID: sourceTenantID,
+				NewID: destTenantID,
+			}},
+		true /* restoreTenantFromStream */)
+	require.NoError(t, err)
+
 	testSpan := func(codec keys.SQLCodec, tableID uint32) roachpb.Span {
 		return roachpb.Span{
 			Key:    codec.IndexPrefix(tableID, 1),
@@ -480,9 +500,9 @@ func TestParallelInitialSplits(t *testing.T) {
 		}
 	}
 
-	genPartitions := func() ([]streamclient.PartitionInfo, roachpb.Spans, roachpb.Spans) {
+	genPartitions := func() ([]streamclient.PartitionInfo, []roachpb.Key, roachpb.Spans) {
 		srcPartitions := make([]streamclient.PartitionInfo, numPartitions)
-		sortedInputSpans := make(roachpb.Spans, 0, numSpans)
+		sortedStartkeys := make([]roachpb.Key, 0, numSpans)
 		outputSpans := make(roachpb.Spans, 0, numSpans)
 		for i := range srcPartitions {
 			srcPartitions[i].Spans = make(roachpb.Spans, 0, numSpans/numPartitions)
@@ -493,16 +513,16 @@ func TestParallelInitialSplits(t *testing.T) {
 			srcSP := testSpan(inputCodec, tableID)
 			dstSP := testSpan(outputCodec, tableID)
 			srcPartitions[partitionIdx].Spans = append(srcPartitions[partitionIdx].Spans, srcSP)
-			sortedInputSpans = append(sortedInputSpans, srcSP)
+			sortedStartkeys = append(sortedStartkeys, srcSP.Key)
 			outputSpans = append(outputSpans, dstSP)
 		}
-		return srcPartitions, sortedInputSpans, outputSpans
+		return srcPartitions, sortedStartkeys, outputSpans
 	}
 
 	srcPartitions, sortedInputSpans, outputSpans := genPartitions()
 
 	// Test the Span Sorter
-	require.Equal(t, sortSpans(srcPartitions), sortedInputSpans)
+	require.Equal(t, sortStartKeys(srcPartitions), sortedInputSpans)
 
 	topo := streamclient.Topology{
 		SourceTenantID: sourceTenantID,
@@ -510,7 +530,7 @@ func TestParallelInitialSplits(t *testing.T) {
 	}
 
 	ts := &testSplitter{}
-	err := createInitialSplits(ctx, keys.SystemSQLCodec, ts, topo, numDestNodes, destTenantID)
+	err = crosscluster.CreateInitialSplits(ctx, ts, sortStartKeys(topo.Partitions), numDestNodes, rekeyer)
 	require.NoError(t, err)
 	require.Equal(t, len(outputSpans), len(ts.mu.splits))
 	require.Equal(t, len(outputSpans), len(ts.mu.scatters))

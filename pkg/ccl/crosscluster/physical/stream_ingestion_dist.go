@@ -252,7 +252,7 @@ func startDistIngestion(
 		if err != nil {
 			return err
 		}
-		if err := crosscluster.CreateInitialSplits(ctx, codec, splitter, sortSpans(planner.initialTopology.Partitions), len(planner.initialDestinationNodes), rekeyer); err != nil {
+		if err := crosscluster.CreateInitialSplits(ctx, splitter, sortStartKeys(planner.initialTopology.Partitions), len(planner.initialDestinationNodes), rekeyer); err != nil {
 			return err
 		}
 	} else {
@@ -276,13 +276,18 @@ func startDistIngestion(
 	return err
 }
 
-func sortSpans(partitions []streamclient.PartitionInfo) roachpb.Spans {
+func sortStartKeys(partitions []streamclient.PartitionInfo) []roachpb.Key {
 	spansToSort := make(roachpb.Spans, 0)
 	for i := range partitions {
 		spansToSort = append(spansToSort, partitions[i].Spans...)
 	}
 	sort.Sort(spansToSort)
-	return spansToSort
+	sortedStartKeys := make([]roachpb.Key, 0, len(spansToSort))
+	for i := range spansToSort {
+		sortedStartKeys = append(sortedStartKeys, spansToSort[i].Key)
+	}
+
+	return sortedStartKeys
 }
 
 // makeReplicationFlowPlanner creates a replicationFlowPlanner and the initial physical plan.
