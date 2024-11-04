@@ -62,6 +62,10 @@ type dstTableMetadata struct {
 	schema   string
 	table    string
 	tableID  descpb.ID
+
+	// TODO(msbutler): this is currently only used for initial splits, not the
+	// dlq. consider moving this field elsewhere.
+	proto *descpb.Descriptor
 }
 
 func (f dstTableMetadata) getDatabaseName() string {
