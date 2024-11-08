@@ -1699,7 +1699,7 @@ func registerClusterReplicationDisconnect(r registry.Registry) {
 		timeout:            20 * time.Minute,
 		additionalDuration: 10 * time.Minute,
 		cutover:            2 * time.Minute,
-		maxAcceptedLatency: 12 * time.Minute,
+		maxAcceptedLatency: 8 * time.Minute,
 		clouds:             registry.OnlyGCE,
 		suites:             registry.Suites(registry.Nightly),
 	}
@@ -1731,7 +1731,13 @@ func registerClusterReplicationDisconnect(r registry.Registry) {
 	})
 }
 
-func partitionPair(ctx context.Context, c cluster.Cluster, t test.Test, srcNodes option.NodeListOption, disconnectDuration time.Duration) {
+func partitionPair(
+	ctx context.Context,
+	c cluster.Cluster,
+	t test.Test,
+	srcNodes option.NodeListOption,
+	disconnectDuration time.Duration,
+) {
 	srcNode := srcNodes.RandNode()[0]
 	srcTenantSQL := sqlutils.MakeSQLRunner(c.Conn(ctx, t.L(), srcNode))
 
