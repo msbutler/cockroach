@@ -348,19 +348,18 @@ func registerBackupFixtures(r registry.Registry) {
 			skip:    "only for fixture generation",
 		},
 		{
+			// TPCC Fixture 350 GB, long chain.
 			hardware: makeHardwareSpecs(hardwareSpecs{workloadNode: true}),
 			scheduledBackupSpecs: makeBackupFixtureSpecs(scheduledBackupSpecs{
 				backupSpecs: backupSpecs{
-					workload:           tpccRestore{opts: tpccRestoreOptions{warehouses: 5000}},
-					nonRevisionHistory: true,
+					workload:          tpccRestore{opts: tpccRestoreOptions{warehouses: 5000}},
+					numBackupsInChain: 48,
+					version:           "v24.1.4",
+					cloud:             spec.GCE,
 				},
 			}),
-			initWorkloadViaRestore: &restoreSpecs{
-				backup:                 backupSpecs{version: "v23.1.1", numBackupsInChain: 48},
-				restoreUptoIncremental: 48,
-			},
-			timeout: 1 * time.Hour,
-			suites:  registry.Suites(registry.Nightly),
+			timeout: 48 * time.Hour,
+			suites:  registry.Suites(registry.Weekly),
 			skip:    "only for fixture generation",
 		},
 	} {
