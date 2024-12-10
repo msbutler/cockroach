@@ -346,6 +346,11 @@ func (p *logicalReplicationPlanner) generatePlanImpl(
 	if err != nil {
 		return nil, nil, info, err
 	}
+
+	if payload.CreateTable && progress.ReplicatedTime.IsEmpty() {
+		return p.planOfflineInitialScan(ctx, dsp, plan)
+	}
+
 	info.sourceSpans = plan.SourceSpans
 	info.streamAddress = plan.Topology.StreamAddresses()
 
@@ -467,6 +472,95 @@ func (p *logicalReplicationPlanner) generatePlanImpl(
 	sql.FinalizePlan(ctx, planCtx, physicalPlan)
 
 	return physicalPlan, planCtx, info, nil
+}
+
+func (p *logicalReplicationPlanner) planOfflineInitialScan(
+	ctx context.Context, dsp *sql.DistSQLPlanner, plan streamclient.LogicalReplicationPlan,
+) (*sql.PhysicalPlan, *sql.PlanningCtx, logicalReplicationPlanInfo, error) {
+	var (
+		execCfg  = p.jobExecCtx.ExecCfg()
+		evalCtx  = p.jobExecCtx.ExtendedEvalContext()
+		progress = p.job.Progress().Details.(*jobspb.Progress_LogicalReplication).LogicalReplication
+		payload  = p.job.Payload().Details.(*jobspb.Payload_LogicalReplicationDetails).LogicalReplicationDetails
+		info     = logicalReplicationPlanInfo{
+			sourceSpans:   plan.SourceSpans,
+			streamAddress: plan.Topology.StreamAddresses(),
+		}
+	)
+
+	rekeys := make([]execinfrapb.TableRekey, 0, len(payload.ReplicationPairs))
+	if err := sql.DescsTxn(ctx, execCfg, func(ctx context.Context, txn isql.Txn, descriptors *descs.Collection) error {
+		for _, pair := range payload.ReplicationPairs {
+			// TODO(msbutler): avoid a marshalling round trip.
+			dstTableDesc, err := descriptors.ByIDWithoutLeased(txn.KV()).Get().Table(ctx, descpb.ID(pair.DstDescriptorID))
+			if err != nil {
+				return errors.Wrapf(err, "failed to look up table descriptor %d", pair.DstDescriptorID)
+			}
+			newDescBytes, err := protoutil.Marshal(dstTableDesc.DescriptorProto())
+			if err != nil {
+				return errors.NewAssertionErrorWithWrappedErrf(err,
+					"marshalling descriptor")
+			}
+			rekeys = append(rekeys, execinfrapb.TableRekey{
+				OldID:   uint32(pair.SrcDescriptorID),
+				NewDesc: newDescBytes,
+			})
+		}
+		return nil
+	}); err != nil {
+		return nil, nil, info, err
+	}
+
+	// TODO(msbutler): consider repartitioning topology
+
+	planCtx, nodes, err := dsp.SetupAllNodesPlanning(ctx, evalCtx, execCfg)
+	if err != nil {
+		return nil, nil, info, err
+	}
+	destNodeLocalities, err := physical.GetDestNodeLocalities(ctx, dsp, nodes)
+	if err != nil {
+		return nil, nil, info, err
+	}
+
+	streamIngestionSpecs, _, err := physical.ConstructStreamIngestionPlanSpecs(
+		ctx,
+		plan.Topology,
+		destNodeLocalities,
+		payload.ReplicationStartTime,
+		hlc.Timestamp{},
+		progress.Checkpoint,
+		p.job.ID(),
+		streampb.StreamID(payload.StreamID),
+		execinfrapb.TenantRekey{},
+		rekeys,
+		plan.SourceSpans)
+	if err != nil {
+		return nil, nil, info, err
+	}
+
+	// Setup a one-stage plan with one proc per input spec.
+	corePlacement := make([]physicalplan.ProcessorCorePlacement, 0, len(streamIngestionSpecs))
+	for instanceID := range streamIngestionSpecs {
+		for _, spec := range streamIngestionSpecs[instanceID] {
+			corePlacement = append(corePlacement, physicalplan.ProcessorCorePlacement{
+				SQLInstanceID: instanceID,
+				Core:          execinfrapb.ProcessorCoreUnion{StreamIngestionData: &spec},
+			})
+		}
+	}
+
+	physPlan := planCtx.NewPhysicalPlan()
+	physPlan.AddNoInputStage(
+		corePlacement,
+		execinfrapb.PostProcessSpec{},
+		// TODO (msbutler): confirm this is kosher.
+		logicalReplicationWriterResultType,
+		execinfrapb.Ordering{},
+	)
+
+	physPlan.PlanToStreamColMap = []int{0}
+	sql.FinalizePlan(ctx, planCtx, physPlan)
+	return physPlan, planCtx, info, nil
 }
 
 // rowHandler is responsible for handling checkpoints sent by logical
