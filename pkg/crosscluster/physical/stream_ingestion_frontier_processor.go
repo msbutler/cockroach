@@ -255,7 +255,7 @@ func (sf *streamIngestionFrontier) ConsumerClosed() {
 func decodeResolvedSpans(
 	alloc *tree.DatumAlloc, resolvedSpanDatums rowenc.EncDatum,
 ) (*jobspb.ResolvedSpans, error) {
-	if err := resolvedSpanDatums.EnsureDecoded(streamIngestionResultTypes[0], alloc); err != nil {
+	if err := resolvedSpanDatums.EnsureDecoded(StreamIngestionResultTypes[0], alloc); err != nil {
 		return nil, err
 	}
 	raw, ok := resolvedSpanDatums.Datum.(*tree.DBytes)
@@ -340,6 +340,8 @@ func (sf *streamIngestionFrontier) maybeUpdateProgress() error {
 		}
 
 		ju.UpdateProgress(progress)
+
+		// early exit for ldr init scan, or better yet, route to ldr coordinator
 
 		// Update the protected timestamp record protecting the destination tenant's
 		// keyspan if the replicatedTime has moved forward since the last time we

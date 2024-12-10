@@ -66,6 +66,8 @@ type eventStream struct {
 	debug  streampb.DebugProducerStatusHolder
 
 	consumerReady atomic.Bool
+
+	initialScanDone bool
 }
 
 var quantize = settings.RegisterDurationSettingWithExplicitUnit(
@@ -159,6 +161,12 @@ func (s *eventStream) Start(ctx context.Context, txn *kv.Txn) (retErr error) {
 		// were written by the foreground workload, not from the LDR replication
 		// stream.
 		opts = append(opts, rangefeed.WithOriginIDsMatching(0))
+	}
+	if s.spec.InitialScanOnly {
+		opts = append(opts, rangefeed.WithInitialScan(func(ctx context.Context) {
+			s.initialScanDone = true
+			s.rf.Close()
+		}))
 	}
 
 	initialTimestamp := s.spec.InitialScanTimestamp

@@ -578,8 +578,11 @@ func (p *replicationFlowPlanner) constructPlanGenerator(
 		if err != nil {
 			return nil, nil, err
 		}
-
-		streamIngestionSpecs, streamIngestionFrontierSpec, err := constructStreamIngestionPlanSpecs(
+		rekeyer := execinfrapb.TenantRekey{
+			OldID: topology.SourceTenantID,
+			NewID: details.DestinationTenantID,
+		}
+		streamIngestionSpecs, streamIngestionFrontierSpec, err := ConstructStreamIngestionPlanSpecs(
 			ctx,
 			topology,
 			destNodeLocalities,
@@ -588,8 +591,9 @@ func (p *replicationFlowPlanner) constructPlanGenerator(
 			checkpoint,
 			ingestionJobID,
 			streamID,
-			topology.SourceTenantID,
-			details.DestinationTenantID)
+			rekeyer,
+			nil,
+			roachpb.Spans{keys.MakeTenantSpan(topology.SourceTenantID)})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -619,7 +623,7 @@ func (p *replicationFlowPlanner) constructPlanGenerator(
 		p.AddNoInputStage(
 			corePlacement,
 			execinfrapb.PostProcessSpec{},
-			streamIngestionResultTypes,
+			StreamIngestionResultTypes,
 			execinfrapb.Ordering{},
 		)
 
@@ -627,7 +631,7 @@ func (p *replicationFlowPlanner) constructPlanGenerator(
 		// StreamIngestionFrontier processor.
 		p.AddSingleGroupStage(ctx, gatewayID,
 			execinfrapb.ProcessorCoreUnion{StreamIngestionFrontier: streamIngestionFrontierSpec},
-			execinfrapb.PostProcessSpec{}, streamIngestionResultTypes)
+			execinfrapb.PostProcessSpec{}, StreamIngestionResultTypes)
 
 		p.PlanToStreamColMap = []int{0}
 		sql.FinalizePlan(ctx, planCtx, p)
@@ -779,7 +783,7 @@ func GetDestNodeLocalities(
 	return instanceInfos, nil
 }
 
-func constructStreamIngestionPlanSpecs(
+func ConstructStreamIngestionPlanSpecs(
 	ctx context.Context,
 	topology streamclient.Topology,
 	destSQLInstances []sql.InstanceLocality,
@@ -788,8 +792,9 @@ func constructStreamIngestionPlanSpecs(
 	checkpoint jobspb.StreamIngestionCheckpoint,
 	jobID jobspb.JobID,
 	streamID streampb.StreamID,
-	sourceTenantID roachpb.TenantID,
-	destinationTenantID roachpb.TenantID,
+	rekeyer execinfrapb.TenantRekey,
+	ldrInitScanRekey []execinfrapb.TableRekey,
+	trackedSpans []roachpb.Span,
 ) (
 	map[base.SQLInstanceID][]execinfrapb.StreamIngestionDataSpec,
 	*execinfrapb.StreamIngestionFrontierSpec,
@@ -804,10 +809,8 @@ func constructStreamIngestionPlanSpecs(
 		InitialScanTimestamp:        initialScanTimestamp,
 		Checkpoint:                  checkpoint, // TODO: Only forward relevant checkpoint info
 		PartitionSpecs:              make(map[string]execinfrapb.StreamIngestionPartitionSpec),
-		TenantRekey: execinfrapb.TenantRekey{
-			OldID: sourceTenantID,
-			NewID: destinationTenantID,
-		},
+		TenantRekey:                 rekeyer,
+		LDRInitScanRekey:            ldrInitScanRekey,
 	}
 
 	streamIngestionSpecs := make(map[base.SQLInstanceID][]execinfrapb.StreamIngestionDataSpec, len(destSQLInstances))
@@ -839,16 +842,15 @@ func constructStreamIngestionPlanSpecs(
 		spanGroup.Add(partition.Spans...)
 	}
 
-	tenantSpan := keys.MakeTenantSpan(sourceTenantID)
-	if !spanGroup.Encloses(tenantSpan) {
-		return nil, nil, errors.AssertionFailedf("span %s not covered by %s", tenantSpan, spanGroup.Slice())
+	if !spanGroup.Encloses(trackedSpans...) {
+		return nil, nil, errors.Newf("tracked spans are not fully covered by the partitions")
 	}
 
 	// Create a spec for the StreamIngestionFrontier processor on the coordinator
 	// node.
 	streamIngestionFrontierSpec := &execinfrapb.StreamIngestionFrontierSpec{
 		ReplicatedTimeAtStart: previousReplicatedTimestamp,
-		TrackedSpans:          []roachpb.Span{tenantSpan},
+		TrackedSpans:          trackedSpans,
 		JobID:                 int64(jobID),
 		StreamID:              uint64(streamID),
 		StreamAddresses:       topology.StreamAddresses(),
