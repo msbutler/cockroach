@@ -676,6 +676,9 @@ func (rh *rowHandler) handleRow(ctx context.Context, row tree.Datums) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	if rh.job.Details().(jobspb.LogicalReplicationDetails).CreateTable && !replicatedTime.IsEmpty() {
+		return errors.New("spinning down offline initial scan")
+	}
 	return nil
 }
 

@@ -480,9 +480,9 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 		}
 
 		var opts []streamclient.SubscribeOption
-		if sip.LDRInitialScan() {
-			opts = append(opts, streamclient.WithInitialScanOnly())
-		}
+		//if sip.LDRInitialScan() {
+		//	opts = append(opts, streamclient.WithInitialScanOnly())
+		//}
 
 		sub, err := streamClient.Subscribe(ctx, streampb.StreamID(sip.spec.StreamID),
 			int32(sip.FlowCtx.NodeID.SQLInstanceID()), sip.ProcessorID,
