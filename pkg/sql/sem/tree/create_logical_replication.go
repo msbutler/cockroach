@@ -33,6 +33,7 @@ type LogicalReplicationOptions struct {
 	DefaultFunction Expr
 	Discard         Expr
 	SkipSchemaCheck *DBool
+	Unidirectional  *DBool
 }
 
 var _ Statement = &CreateLogicalReplicationStream{}
@@ -149,6 +150,11 @@ func (lro *LogicalReplicationOptions) Format(ctx *FmtCtx) {
 		ctx.FormatNode(lro.MetricsLabel)
 	}
 
+	if lro.Unidirectional != nil {
+		maybeAddSep()
+		ctx.WriteString("NOT SYMMETRIC")
+	}
+
 }
 
 func (o *LogicalReplicationOptions) CombineWith(other *LogicalReplicationOptions) error {
@@ -211,6 +217,14 @@ func (o *LogicalReplicationOptions) CombineWith(other *LogicalReplicationOptions
 		o.MetricsLabel = other.MetricsLabel
 	}
 
+	if o.Unidirectional != nil {
+		if other.Unidirectional != nil {
+			return errors.New("NOT SYMMETRIC option specified multiple times")
+		}
+	} else {
+		o.Unidirectional = other.Unidirectional
+	}
+
 	return nil
 }
 
@@ -223,5 +237,6 @@ func (o LogicalReplicationOptions) IsDefault() bool {
 		o.UserFunctions == nil &&
 		o.Discard == options.Discard &&
 		o.SkipSchemaCheck == options.SkipSchemaCheck &&
-		o.MetricsLabel == options.MetricsLabel
+		o.MetricsLabel == options.MetricsLabel &&
+		o.Unidirectional == options.Unidirectional
 }

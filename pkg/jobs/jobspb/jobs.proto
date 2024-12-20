@@ -275,6 +275,8 @@ message LogicalReplicationDetails {
 
   bool create_table = 12;
 
+  string reverse_stream_command = 13;
+
   // Next ID: 12.
 }
 

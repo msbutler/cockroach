@@ -8,6 +8,7 @@ package logical
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/utilccl"
@@ -135,6 +136,21 @@ func createLogicalReplicationStreamPlanHook(
 				return pgerror.Newf(pgcode.InvalidParameterValue, "unknown discard option %q", m)
 			}
 		}
+
+		var reverseStreamCmd string
+		if stmt.CreateTable && !options.Unidirectional() {
+			reverseURL, err := p.ExecCfg().NodeInfo.PGURL(url.User(p.User().Normalized()))
+			if err != nil {
+				return err
+			}
+			reverseStmt := *stmt
+			reverseStmt.From, reverseStmt.Into = reverseStmt.Into, reverseStmt.From
+			reverseStmt.CreateTable = false
+			reverseStmt.Options.Cursor = tree.NewStrVal("$1")
+			reverseStmt.PGURL = tree.NewStrVal(reverseURL.String())
+			reverseStreamCmd = reverseStmt.String()
+		}
+
 		resolvedDestObjects, err := resolveDestinationObjects(ctx, p, stmt.Into, stmt.CreateTable)
 		if err != nil {
 			return err
@@ -269,6 +285,7 @@ func createLogicalReplicationStreamPlanHook(
 				Mode:                      mode,
 				MetricsLabel:              options.metricsLabel,
 				CreateTable:               stmt.CreateTable,
+				ReverseStreamCommand:      reverseStreamCmd,
 			},
 			Progress: progress,
 		}
@@ -466,6 +483,7 @@ type resolvedLogicalReplicationOptions struct {
 	discard         string
 	skipSchemaCheck bool
 	metricsLabel    string
+	unidrectional   bool
 }
 
 func evalLogicalReplicationOptions(
@@ -557,6 +575,9 @@ func evalLogicalReplicationOptions(
 	if options.SkipSchemaCheck == tree.DBoolTrue {
 		r.skipSchemaCheck = true
 	}
+	if options.Unidirectional == tree.DBoolTrue {
+		r.unidrectional = true
+	}
 	return r, nil
 }
 
@@ -621,4 +642,8 @@ func (r *resolvedLogicalReplicationOptions) SkipSchemaCheck() bool {
 		return false
 	}
 	return r.skipSchemaCheck
+}
+
+func (r *resolvedLogicalReplicationOptions) Unidirectional() bool {
+	return r == nil || r.unidrectional
 }

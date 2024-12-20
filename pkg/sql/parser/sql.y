@@ -4770,6 +4770,10 @@ logical_replication_options:
   {
     $$.val = &tree.LogicalReplicationOptions{MetricsLabel: $3.expr()}
   }
+| NOT SYMMETRIC
+  {
+   $$.val = &tree.LogicalReplicationOptions{Unidirectional: tree.MakeDBool(true)} 
+  }
 
 // %Help: CREATE VIRTUAL CLUSTER - create a new virtual cluster
 // %Category: Experimental
