@@ -599,6 +599,15 @@ func TestLogicalStreamIngestionErrors(t *testing.T) {
 		dbB.ExpectErr(t, "failed to find existing destination table \"b.missing.tab\"", "CREATE LOGICAL REPLICATION STREAM FROM TABLE tab ON $1 INTO TABLE b.missing.tab", urlA)
 	})
 
+	t.Run("unsupported create table schema", func(t *testing.T) {
+		dbA.Exec(t, "CREATE TYPE my_enum AS ENUM ('one', 'two', 'three')")
+		dbB.Exec(t, "CREATE TYPE my_enum2 AS ENUM ('one', 'two', 'three')")
+		dbB.Exec(t, "DROP TYPE my_enum2")
+		//dbB.Exec(t, "CREATE TYPE my_enum AS ENUM ('one', 'two', 'three')")
+		dbA.Exec(t, "CREATE TABLE data (pk INT PRIMARY KEY, val1 my_enum DEFAULT 'two')")
+		dbB.ExpectErr(t, "unsupported schema", "CREATE LOGICALLY REPLICATED TABLE data FROM TABLE data ON $1", urlA)
+	})
+
 }
 
 func TestLogicalStreamIngestionJobWithColumnFamilies(t *testing.T) {
