@@ -315,7 +315,6 @@ func resolveDestinationObjects(
 		if err != nil {
 			return resolved, err
 		}
-		dstObjName.HasExplicitSchema()
 
 		if createTable {
 			_, _, resPrefix, err := resolver.ResolveTarget(ctx,
@@ -323,7 +322,9 @@ func resolveDestinationObjects(
 			if err != nil {
 				return resolved, errors.Newf("resolving target import name")
 			}
-
+			if resPrefix.Database == nil || resPrefix.Schema == nil {
+				return resolved, errors.Newf("database or schema not found for destination table %q", destResources.Tables[i])
+			}
 			if resolved.ParentDatabaseID == 0 {
 				resolved.ParentDatabaseID = resPrefix.Database.GetID()
 				resolved.ParentSchemaID = resPrefix.Schema.GetID()
@@ -343,7 +344,7 @@ func resolveDestinationObjects(
 			dstTableName := dstObjName.ToTableName()
 			prefix, td, err := resolver.ResolveMutableExistingTableObject(ctx, p, &dstTableName, true, tree.ResolveRequireTableDesc)
 			if err != nil {
-				return resolved, err
+				return resolved, errors.Wrapf(err, "failed to find existing destination table %q", destResources.Tables[i])
 			}
 
 			tbNameWithSchema := tree.MakeTableNameWithSchema(

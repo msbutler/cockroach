@@ -592,6 +592,13 @@ func TestLogicalStreamIngestionErrors(t *testing.T) {
 			"cannot CREATE LOGICAL REPLICATION STREAM in a multi-statement transaction"))
 	})
 
+	t.Run("incorrect targets", func(t *testing.T) {
+		dbB.ExpectErr(t, "database or schema not found for destination table \"c.tab\"", "CREATE LOGICALLY REPLICATED TABLE c.tab FROM TABLE tab ON $1", urlA)
+		dbB.ExpectErr(t, "database or schema not found for destination table \"b.missing.tab\"", "CREATE LOGICALLY REPLICATED TABLE b.missing.tab FROM TABLE tab ON $1", urlA)
+		dbB.ExpectErr(t, "failed to find existing destination table \"c.tab\"", "CREATE LOGICAL REPLICATION STREAM FROM TABLE tab ON $1 INTO TABLE c.tab", urlA)
+		dbB.ExpectErr(t, "failed to find existing destination table \"b.missing.tab\"", "CREATE LOGICAL REPLICATION STREAM FROM TABLE tab ON $1 INTO TABLE b.missing.tab", urlA)
+	})
+
 }
 
 func TestLogicalStreamIngestionJobWithColumnFamilies(t *testing.T) {
