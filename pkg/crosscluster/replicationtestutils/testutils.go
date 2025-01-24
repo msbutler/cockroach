@@ -660,6 +660,8 @@ var DefaultClusterSettings = map[string]string{
 	`stream_replication.min_checkpoint_frequency`:       `'1s'`,
 	// Large timeout makes test to not fail with unexpected timeout failures.
 	`stream_replication.stream_liveness_track_frequency`: `'2s'`,
+	// Auto stats slows things down.
+	`sql.stats.automatic_collection.enabled`: `false`,
 }
 
 func ConfigureDefaultSettings(t *testing.T, sqlRunner *sqlutils.SQLRunner) {
