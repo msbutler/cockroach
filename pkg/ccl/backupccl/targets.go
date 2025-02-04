@@ -443,7 +443,7 @@ func checkMissingIntroducedSpans(
 
 		// requiredIntroduction affirms that the given table in backup i was either
 		// introduced in backup i, or included online in backup i-1.
-		requiredIntroduction := func(table *descpb.TableDescriptor) error {
+		requiredIntroduction := func(table *descpb.TableDescriptor, rev bool) error {
 			if _, required := requiredTables[table.GetID()]; !required {
 				// The table is not required for the restore, so there's no need to check coverage.
 				return nil
@@ -470,8 +470,9 @@ func checkMissingIntroducedSpans(
 				" 1) restore to a system time before the import completed, %v;"+
 				" 2) restore with a newer backup chain (a full backup [+ incrementals])"+
 				" taken after the current backup target;"+
-				" 3) or remove table %v from the restore targets.",
-				table.Name, mainBackupManifests[i].StartTime.GoTime().String(), table.Name)
+				" 3) or remove table %v from the restore targets."+
+				" table id %d, parent id %d. rev %v",
+				table.Name, mainBackupManifests[i].StartTime.GoTime().String(), table.Name, table.ID, table.ParentID, rev)
 			return errors.WithIssueLink(tableError, errors.IssueLink{
 				IssueURL: "https://www.cockroachlabs.com/docs/advisories/a88042",
 				Detail: `An incremental database backup with revision history can incorrectly backup data for a table
@@ -492,7 +493,7 @@ that was running an IMPORT at the time of the previous incremental in this chain
 			// Check that all online tables at backup time were either introduced or
 			// in the previous backup.
 			if table, _, _, _, _ := descpb.GetDescriptors(descIt.Value()); table != nil && table.Public() {
-				if err := requiredIntroduction(table); err != nil {
+				if err := requiredIntroduction(table, false); err != nil {
 					return err
 				}
 			}
@@ -513,7 +514,7 @@ that was running an IMPORT at the time of the previous incremental in this chain
 			}
 
 			if table, _, _, _, _ := descpb.GetDescriptors(descRevIt.Value().Desc); table != nil && table.Public() {
-				if err := requiredIntroduction(table); err != nil {
+				if err := requiredIntroduction(table, true); err != nil {
 					return err
 				}
 			}
