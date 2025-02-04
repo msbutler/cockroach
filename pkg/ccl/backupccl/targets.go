@@ -441,6 +441,23 @@ func checkMissingIntroducedSpans(
 			tablesIntroduced[descpb.ID(tableID)] = struct{}{}
 		}
 
+		prevTableSpans := make(map[descpb.ID]struct{})
+		for _, span := range mainBackupManifests[i-1].Spans {
+			if rest, _, err := keys.DecodeTenantPrefix(span.Key); err != nil {
+				return err
+			} else if len(rest) == 0 {
+				// The key span represents a whole tenant's key space. Checking for
+				// table spans does not apply.
+				log.Infof(ctx, "skipping pref span check on tenant span %s", span)
+				continue
+			}
+			_, tableID, err := codec.DecodeTablePrefix(span.Key)
+			if err != nil {
+				return err
+			}
+			prevTableSpans[descpb.ID(tableID)] = struct{}{}
+		}
+
 		// requiredIntroduction affirms that the given table in backup i was either
 		// introduced in backup i, or included online in backup i-1.
 		requiredIntroduction := func(table *descpb.TableDescriptor, rev bool) error {
@@ -459,9 +476,15 @@ func checkMissingIntroducedSpans(
 			}
 
 			if _, inPrevBackup := prevOnlineTables[table.GetID()]; inPrevBackup {
-				// The table was included in the previous backup, which implies the
+				// The table was online and included in the previous backup, which implies the
 				// table was online at prevBackup.Endtime, and therefore does not need
 				// to be introduced.
+				return nil
+			}
+
+			if _, inPrevBackup := prevTableSpans[table.GetID()]; inPrevBackup {
+				// The table was included in the previous backup, and therefore does not
+				// need to be introduced.
 				return nil
 			}
 			tableError := errors.Newf("table %q cannot be safely restored from this backup."+
