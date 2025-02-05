@@ -151,7 +151,7 @@ func TestExtractIngestExternalCatalog(t *testing.T) {
 			"cross database type references are not supported",
 		)
 		var res int
-		sqlDB.QueryRow(t, "SELECT count(*) FROM [SHOW TABLES]").Scan(&res)
+		sqlDB.QueryRow(t, "SELECT count(*) FROM [SHOW TABLES FROM defaultdb]").Scan(&res)
 		require.Zero(t, res)
 	})
 
