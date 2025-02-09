@@ -25,6 +25,11 @@ func LogStatusChangeStructured(
 	prevStatus Status,
 	status Status,
 ) {
+
+	if jobType != "foofoo" {
+		return
+	}
+
 	out := eventpb.StatusChange{
 		JobID:          int64(id),
 		JobType:        jobType,

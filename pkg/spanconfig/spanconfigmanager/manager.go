@@ -41,7 +41,7 @@ var checkReconciliationJobInterval = settings.RegisterDurationSetting(
 var jobEnabledSetting = settings.RegisterBoolSetting(
 	settings.ApplicationLevel,
 	"spanconfig.reconciliation_job.enabled",
-	"enable the use of the kv accessor", true)
+	"enable the use of the kv accessor", false)
 
 // Manager is the coordinator of the span config subsystem. It ensures that
 // there's only one span config reconciliation job[1] for every tenant. It also

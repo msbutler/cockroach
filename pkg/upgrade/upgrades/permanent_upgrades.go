@@ -38,8 +38,8 @@ func bootstrapSystem(
 		fn   upgrade.SystemUpgradeFunc
 	}{
 		{"initialize cluster version", populateVersionSetting},
-		{"configure key visualizer", keyVisualizerTablesMigration},
-		{"configure sql activity table TTLs", sqlStatsTTLChange},
+		//{"configure key visualizer", keyVisualizerTablesMigration},
+		//{"configure sql activity table TTLs", sqlStatsTTLChange},
 	} {
 		log.Infof(ctx, "executing system bootstrap step %q", u.name)
 		if err := u.fn(ctx, cv, deps); err != nil {
@@ -63,15 +63,15 @@ func bootstrapCluster(
 		fn   upgrade.TenantUpgradeFunc
 	}{
 		{"add users and roles", addRootUser},
-		{"enable diagnostics reporting", optInToDiagnosticsStatReporting},
-		{"initialize the cluster.secret setting", initializeClusterSecret},
-		{"update system.locations with default location data", updateSystemLocationData},
+		//{"enable diagnostics reporting", optInToDiagnosticsStatReporting},
+		//{"initialize the cluster.secret setting", initializeClusterSecret},
+		//{"update system.locations with default location data", updateSystemLocationData},
 		{"create default databases", createDefaultDbs},
-		{"create jobs metrics polling job", createJobsMetricsPollingJob},
-		{"create sql activity updater job", createActivityUpdateJobMigration},
-		{"create mvcc stats job", createMVCCStatisticsJob},
-		{"create update cached table metadata job", createUpdateTableMetadataCacheJob},
-		{"maybe initialize replication standby read-only catalog", maybeSetupPCRStandbyReader},
+		//{"create jobs metrics polling job", createJobsMetricsPollingJob},
+		//{"create sql activity updater job", createActivityUpdateJobMigration},
+		//{"create mvcc stats job", createMVCCStatisticsJob},
+		//{"create update cached table metadata job", createUpdateTableMetadataCacheJob},
+		//{"maybe initialize replication standby read-only catalog", maybeSetupPCRStandbyReader},
 	} {
 		log.Infof(ctx, "executing bootstrap step %q", u.name)
 		if err := u.fn(ctx, cv, deps); err != nil {
