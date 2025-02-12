@@ -1562,7 +1562,7 @@ message Progress {
     util.hlc.Timestamp high_water = 3;
   }
   int64 modified_micros = 2;
-  string running_status = 4;
+  string status = 4;
 
   //                ------ COMPLIANCE NOTE ------
   // If you're updating this `Progress` proto, consider its impact on compliance.

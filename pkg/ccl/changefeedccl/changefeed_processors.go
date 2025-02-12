@@ -1353,7 +1353,7 @@ func (cf *changeFrontier) Start(ctx context.Context) {
 		// not get shutdown immediately after the changefeed starts.
 		cf.latestResolvedKV = timeutil.Now()
 
-		if p.RunningStatus != "" {
+		if p.Status != "" {
 			// If we had running status set, that means we're probably retrying
 			// due to a transient error.  In that case, keep the previous
 			// running status around for a while before we override it.
@@ -1759,7 +1759,7 @@ func (cf *changeFrontier) checkpointJobProgress(
 			}
 
 			if updateRunStatus {
-				progress.RunningStatus = fmt.Sprintf("running: resolved=%s", frontier)
+				progress.Status = fmt.Sprintf("running: resolved=%s", frontier)
 			}
 
 			ju.UpdateProgress(progress)

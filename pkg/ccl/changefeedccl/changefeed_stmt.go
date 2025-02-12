@@ -1141,16 +1141,16 @@ type changefeedResumer struct {
 	job *jobs.Job
 }
 
-func (b *changefeedResumer) setJobRunningStatus(
+func (b *changefeedResumer) setJobStatus(
 	ctx context.Context, lastUpdate time.Time, fmtOrMsg string, args ...interface{},
 ) time.Time {
 	if timeutil.Since(lastUpdate) < runStatusUpdateFrequency {
 		return lastUpdate
 	}
 
-	status := jobs.RunningStatus(fmt.Sprintf(fmtOrMsg, args...))
-	if err := b.job.NoTxn().RunningStatus(ctx, status); err != nil {
-		log.Warningf(ctx, "failed to set running status: %v", err)
+	status := jobs.Status(fmt.Sprintf(fmtOrMsg, args...))
+	if err := b.job.NoTxn().UpdateStatus(ctx, status); err != nil {
+		log.Warningf(ctx, "failed to set status: %v", err)
 	}
 
 	return timeutil.Now()
@@ -1272,7 +1272,7 @@ func (b *changefeedResumer) handleChangefeedError(
 			changefeedbase.OptOnError, changefeedbase.OptOnErrorPause)
 		return b.job.NoTxn().PauseRequestedWithFunc(ctx, func(ctx context.Context, md jobs.JobMetadata, ju *jobs.JobUpdater) error {
 			// directly update running status to avoid the running/reverted job status check
-			md.Progress.RunningStatus = errorMessage
+			md.Progress.Status = errorMessage
 			ju.UpdateProgress(md.Progress)
 			log.Warningf(ctx, errorFmt, changefeedErr, changefeedbase.OptOnError, changefeedbase.OptOnErrorPause)
 			return nil
@@ -1395,7 +1395,7 @@ func (b *changefeedResumer) resumeWithRetries(
 			// Best effort -- update job status to make it clear why changefeed shut down.
 			// This won't always work if this node is being shutdown/drained.
 			if ctx.Err() == nil {
-				b.setJobRunningStatus(ctx, time.Time{}, "shutdown due to %s", err)
+				b.setJobStatus(ctx, time.Time{}, "shutdown due to %s", err)
 			}
 			return err
 		}
@@ -1403,7 +1403,7 @@ func (b *changefeedResumer) resumeWithRetries(
 		// All other errors retry.
 		log.Warningf(ctx, `Changefeed job %d encountered transient error: %v (attempt %d)`,
 			jobID, flowErr, 1+r.CurrentAttempt())
-		lastRunStatusUpdate = b.setJobRunningStatus(ctx, lastRunStatusUpdate, "transient error: %s", flowErr)
+		lastRunStatusUpdate = b.setJobStatus(ctx, lastRunStatusUpdate, "transient error: %s", flowErr)
 
 		if metrics, ok := execCfg.JobRegistry.MetricsStruct().Changefeed.(*Metrics); ok {
 			sli, err := metrics.getSLIMetrics(details.Opts[changefeedbase.OptMetricsScope])

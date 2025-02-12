@@ -615,7 +615,7 @@ func runBackupMVCCRangeTombstones(
 	waitForState := func(
 		jobID string,
 		exxpectedState jobs.State,
-		expectRunningStatus jobs.RunningStatus,
+		expectStatus jobs.Status,
 		duration time.Duration,
 	) {
 		ctx, cancel := context.WithTimeout(ctx, duration)
@@ -634,12 +634,12 @@ func runBackupMVCCRangeTombstones(
 			if jobs.State(status) != exxpectedState {
 				return errors.Errorf("expected job state %s, but got %s", exxpectedState, status)
 			}
-			if expectRunningStatus != "" {
+			if expectStatus != "" {
 				var progress jobspb.Progress
 				require.NoError(t, protoutil.Unmarshal(progressBytes, &progress))
-				if jobs.RunningStatus(progress.RunningStatus) != expectRunningStatus {
+				if jobs.Status(progress.Status) != expectStatus {
 					return errors.Errorf("expected running status %s, but got %s",
-						expectRunningStatus, progress.RunningStatus)
+						expectStatus, progress.Status)
 				}
 			}
 			return nil
@@ -780,7 +780,7 @@ func runBackupMVCCRangeTombstones(
 	require.NoError(t, err)
 	require.NoError(t, conn.QueryRowContext(ctx,
 		`SELECT job_id FROM [SHOW JOBS] WHERE job_type = 'SCHEMA CHANGE GC'`).Scan(&jobID))
-	waitForState(jobID, jobs.StateRunning, sql.RunningStatusWaitingForMVCCGC, 2*time.Minute)
+	waitForState(jobID, jobs.StateRunning, sql.StatusWaitingForMVCCGC, 2*time.Minute)
 
 	// Check that the data has been deleted. We don't write MVCC range tombstones
 	// unless the range contains live data, so only assert their existence if the

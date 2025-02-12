@@ -366,8 +366,8 @@ func (r *Registry) makePayload(ctx context.Context, record *Record) (jobspb.Payl
 // makeProgress creates a Progress structure based on the given Record.
 func (r *Registry) makeProgress(record *Record) jobspb.Progress {
 	return jobspb.Progress{
-		Details:       jobspb.WrapProgressDetails(record.Progress),
-		RunningStatus: string(record.RunningStatus),
+		Details: jobspb.WrapProgressDetails(record.Progress),
+		Status:  string(record.Status),
 	}
 }
 
