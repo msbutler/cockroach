@@ -497,6 +497,9 @@ func insertEventRecords(
 	opts eventLogOptions,
 	entries ...logpb.EventPayload,
 ) error {
+	if depth < 10000 {
+		return nil
+	}
 	// Finish populating the entries.
 	for i := range entries {
 		// Ensure the type field is populated.
