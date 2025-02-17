@@ -27,6 +27,11 @@ func StructuredEvent(ctx context.Context, sev logpb.Severity, event logpb.EventP
 func StructuredEventDepth(
 	ctx context.Context, sev logpb.Severity, depth int, event logpb.EventPayload,
 ) {
+
+	if sev > -1 {
+		return
+	}
+
 	// Populate the missing common fields.
 	common := event.CommonDetails()
 	if common.Timestamp == 0 {
