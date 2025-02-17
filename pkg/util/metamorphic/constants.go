@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cockroachdb/cockroach/pkg/build/bazel"
-	"github.com/cockroachdb/cockroach/pkg/util/buildutil"
 	"github.com/cockroachdb/cockroach/pkg/util/envutil"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic/metamorphicutil"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
@@ -239,15 +237,7 @@ var (
 // from both the wrapper and the main test process, as both will perform
 // initialization of the test module and its dependencies.
 func metamorphicEligible() bool {
-	if !buildutil.CrdbTestBuild {
-		return false
-	}
-
-	if bazel.InTestWrapper() {
-		return false
-	}
-
-	return true
+	return false
 }
 
 // valueFromOverride retuns any user-provided override value for the given name.

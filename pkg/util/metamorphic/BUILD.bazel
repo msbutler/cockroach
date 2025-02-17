@@ -10,8 +10,6 @@ go_library(
     importpath = "github.com/cockroachdb/cockroach/pkg/util/metamorphic",
     visibility = ["//visibility:public"],
     deps = [
-        "//pkg/build/bazel",
-        "//pkg/util/buildutil",
         "//pkg/util/envutil",
         "//pkg/util/metamorphic/metamorphicutil",
         "//pkg/util/randutil",
