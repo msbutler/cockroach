@@ -46,6 +46,7 @@ func TestBackupSharedProcessTenantNodeDown(t *testing.T) {
 	params := base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
 			DefaultTestTenant: base.TestControlsTenantsExplicitly,
+			DisableEventLog:   true,
 		},
 	}
 	params.ServerArgs.Knobs.JobsTestingKnobs = jobs.NewTestingKnobsWithShortIntervals()
