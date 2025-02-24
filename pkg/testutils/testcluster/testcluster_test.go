@@ -93,6 +93,7 @@ func TestServerStartNoTenant(t *testing.T) {
 		DefaultTestTenant: base.TestControlsTenantsExplicitly,
 		DisableEventLog:   true,
 	})
+
 	srv.Stopper().Stop(context.Background())
 }
 
