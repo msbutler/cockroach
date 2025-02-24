@@ -133,7 +133,7 @@ const (
 // but the cap was increased from 96 to 128 to reduce chance of starvation
 // within shards or on multi-store nodes.
 var defaultRaftSchedulerConcurrency = envutil.EnvOrDefaultInt(
-	"COCKROACH_SCHEDULER_CONCURRENCY", min(8*runtime.GOMAXPROCS(0), 128))
+	"COCKROACH_SCHEDULER_CONCURRENCY", min(8*runtime.GOMAXPROCS(0), 32))
 
 // defaultRaftSchedulerMinConcurrencyPerStore specifies the minimum number of
 // Raft scheduler worker goroutines for each store. The configuration prevents
@@ -198,7 +198,7 @@ var logStoreTelemetryTicks = envutil.EnvOrDefaultInt(
 // scheduler will use to perform rangefeed work. This number will be divided
 // between stores of the node.
 var defaultRangefeedSchedulerConcurrency = envutil.EnvOrDefaultInt(
-	"COCKROACH_RANGEFEED_SCHEDULER_WORKERS", min(4*runtime.GOMAXPROCS(0), 64))
+	"COCKROACH_RANGEFEED_SCHEDULER_WORKERS", min(4*runtime.GOMAXPROCS(0), 16))
 
 // defaultRangefeedSchedulerShardSize specifies the default maximum number of
 // scheduler worker goroutines per mutex shard. By default, we spin up 4 workers

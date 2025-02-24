@@ -518,6 +518,7 @@ func DefaultPebbleOptions() *pebble.Options {
 		BlockPropertyCollectors:     PebbleBlockPropertyCollectors,
 		FormatMajorVersion:          MinimumSupportedFormatVersion,
 	}
+	opts.Experimental.FileCacheShards = 4
 	opts.Experimental.L0CompactionConcurrency = l0SubLevelCompactionConcurrency
 	// Automatically flush 10s after the first range tombstone is added to a
 	// memtable. This ensures that we can reclaim space even when there's no
