@@ -61,36 +61,6 @@ var upgrades = []upgradebase.Upgrade{
 
 	newFirstUpgrade(clusterversion.V25_1_Start.Version()),
 
-	upgrade.NewTenantUpgrade(
-		"add new jobs tables",
-		clusterversion.V25_1_AddJobsTables.Version(),
-		upgrade.NoPrecondition,
-		addJobsTables,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore the new field"),
-	),
-
-	upgrade.NewTenantUpgrade(
-		"create prepared_transactions table",
-		clusterversion.V25_1_PreparedTransactionsTable.Version(),
-		upgrade.NoPrecondition,
-		createPreparedTransactionsTable,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore this table"),
-	),
-	upgrade.NewTenantUpgrade(
-		"add new jobs tables",
-		clusterversion.V25_1_AddJobsColumns.Version(),
-		upgrade.NoPrecondition,
-		addJobsColumns,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore the new field"),
-	),
-	upgrade.NewTenantUpgrade(
-		"backfill new jobs tables",
-		clusterversion.V25_1_JobsBackfill.Version(),
-		upgrade.NoPrecondition,
-		backfillJobsTablesAndColumns,
-		upgrade.RestoreActionNotRequired("cluster restore does not restore jobs tables"),
-	),
-
 	newFirstUpgrade(clusterversion.V25_2_Start.Version()),
 
 	// Note: when starting a new release version, the first upgrade (for
