@@ -49,7 +49,9 @@ func TestClusterStartNoTenant(t *testing.T) {
 // Stats over 100 runs: max = 6.3s, min = 2.0s, avg = 3.1s, dev = 1.1s
 // DisableEventLogging: Stats over 100 runs: max = 3.6s, min = 1.7s, avg = 3.1s, dev = 0.3s
 // Hard disable: Stats over 100 runs: max = 3.4s, min = 1.7s, avg = 3.0s, dev = 0.3s
+// - This has led to parity between shared and external tenant
 // Remove some perm upgrades: Stats over 100 runs: max = 2.9s, min = 1.3s, avg = 2.6s, dev = 0.3s
+// Same if you remove 25.1 upgrades!
 func TestServerStartWithExternalTenant(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
@@ -65,6 +67,7 @@ func TestServerStartWithExternalTenant(t *testing.T) {
 // DisableEventLogging: Stats over 100 runs: max = 3.3s, min = 1.5s, avg = 2.9s, dev = 0.3s
 // Hard Disable: Stats over 100 runs: max = 3.2s, min = 1.5s, avg = 2.9s, dev = 0.3s
 // Remove some perm upgrades: Stats over 100 runs: max = 3.0s, min = 1.4s, avg = 2.5s, dev = 0.2s
+// Same if you remove 25.1 upgrades!
 
 func TestServerStartWithSharedTenant(t *testing.T) {
 	defer leaktest.AfterTest(t)()
@@ -81,7 +84,7 @@ func TestServerStartWithSharedTenant(t *testing.T) {
 // DisableEventLogging: Stats over 100 runs: max = 2.6s, min = 1.2s, avg = 2.2s, dev = 0.2s
 // Hard disable:  Stats over 100 runs: max = 2.8s, min = 1.2s, avg = 2.2s, dev = 0.2s
 // Remove some perm upgrades: Stats over 100 runs: max = 2.2s, min = 1.0s, avg = 1.9s, dev = 0.2s
-
+// Same if you remove 25.1 upgrades!
 func TestServerStartNoTenant(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
