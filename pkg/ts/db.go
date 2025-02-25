@@ -40,7 +40,7 @@ var TimeseriesStorageEnabled = settings.RegisterBoolSetting(
 	"timeseries.storage.enabled",
 	"if set, periodic timeseries data is stored within the cluster; disabling is not recommended "+
 		"unless you are storing the data elsewhere",
-	true,
+	false,
 	settings.WithPublic)
 
 // Resolution10sStorageTTL defines the maximum age of data that will be retained
