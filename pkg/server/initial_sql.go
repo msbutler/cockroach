@@ -12,7 +12,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvstorage"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
 
@@ -34,18 +33,6 @@ func (s *topLevelServer) RunInitialSQL(
 	if !newCluster || s.cfg.DisableSQLServer {
 		// The initial SQL code only runs the first time the cluster is initialized.
 		return nil
-	}
-
-	if startSingleNode {
-		// For start-single-node, set the default replication factor to
-		// 1 so as to avoid warning messages and unnecessary rebalance
-		// churn.
-		if err := s.disableReplication(ctx); err != nil {
-			log.Ops.Errorf(ctx, "could not disable replication: %v", err)
-			return err
-		}
-		log.Ops.Infof(ctx, "Replication was disabled for this cluster.\n"+
-			"When/if adding nodes in the future, update zone configurations to increase the replication factor.")
 	}
 
 	if adminUser != "" && !s.Insecure() {

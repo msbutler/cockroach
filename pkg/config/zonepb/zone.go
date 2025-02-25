@@ -232,7 +232,7 @@ func NewZoneConfig() *ZoneConfig {
 // config has been specified.
 func DefaultZoneConfig() ZoneConfig {
 	return ZoneConfig{
-		NumReplicas:   proto.Int32(3),
+		NumReplicas:   proto.Int32(1),
 		RangeMinBytes: proto.Int64(128 << 20), // 128 MB
 		RangeMaxBytes: proto.Int64(512 << 20), // 512 MB
 		GC: &GCPolicy{
@@ -255,7 +255,7 @@ func DefaultZoneConfigRef() *ZoneConfig {
 // DefaultZoneConfig but has a replication factor of 5 instead of 3.
 func DefaultSystemZoneConfig() ZoneConfig {
 	defaultSystemZoneConfig := DefaultZoneConfig()
-	defaultSystemZoneConfig.NumReplicas = proto.Int32(5)
+	defaultSystemZoneConfig.NumReplicas = proto.Int32(1)
 	return defaultSystemZoneConfig
 }
 
