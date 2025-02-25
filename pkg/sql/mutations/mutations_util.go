@@ -15,12 +15,7 @@ const productionMaxBatchSize = 10000
 
 var maxBatchSize = defaultMaxBatchSize
 
-var defaultMaxBatchSize = int64(metamorphic.ConstantWithTestRange(
-	"max-batch-size",
-	productionMaxBatchSize, /* defaultValue */
-	1,                      /* min */
-	productionMaxBatchSize, /* max */
-))
+var defaultMaxBatchSize = int64(productionMaxBatchSize)
 
 var testingMaxBatchByteSize = metamorphic.ConstantWithTestRange(
 	"max-batch-byte-size",
