@@ -31,7 +31,7 @@ type Channel = logpb.Channel
 func logfDepth(
 	ctx context.Context, depth int, sev Severity, ch Channel, format string, args ...interface{},
 ) {
-	logfDepthInternal(ctx, depth+1, sev, ch, false /* shout */, format, args...)
+	//logfDepthInternal(ctx, depth+1, sev, ch, false /* shout */, format, args...)
 }
 
 // ExitTimeoutOnFatalLog is the time the process will wait for logs to
