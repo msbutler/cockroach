@@ -446,9 +446,6 @@ type VirtualSchemaHolder struct {
 	orderedNames  []string
 
 	catalogCache nstree.MutableCatalog
-	// Needed for backward-compat on crdb_internal.ranges{_no_leases}.
-	// Remove in v23.2.
-	st *cluster.Settings
 }
 
 var _ VirtualTabler = (*VirtualSchemaHolder)(nil)
@@ -932,10 +929,6 @@ func NewVirtualSchemaHolder(
 		schemasByID:   make(map[descpb.ID]*virtualSchemaEntry, len(virtualSchemas)),
 		orderedNames:  make([]string, len(virtualSchemas)),
 		defsByID:      make(map[descpb.ID]*virtualDefEntry, math.MaxUint32-catconstants.MinVirtualID),
-
-		// Needed for backward-compat on crdb_internal.ranges{_no_leases}.
-		// Remove in v23.2.
-		st: st,
 	}
 
 	order := 0
