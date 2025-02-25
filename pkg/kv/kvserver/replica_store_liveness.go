@@ -18,7 +18,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/settings"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 )
 
 // RaftLeaderFortificationFractionEnabled controls the fraction of ranges for
@@ -33,10 +32,7 @@ var RaftLeaderFortificationFractionEnabled = settings.RegisterFloatSetting(
 		"by extension, use Leader leases for all ranges which do not require "+
 		"expiration-based leases. Set to a value between 0.0 and 1.0 to gradually "+
 		"roll out Leader leases across the ranges in a cluster.",
-	metamorphic.ConstantWithTestChoice("kv.raft.leader_fortification.fraction_enabled",
-		0.0, /* defaultValue */
-		1.0 /* otherValues */),
-	settings.FloatInRange(0.0, 1.0),
+	0.0, /* defaultValue */
 	settings.WithPublic,
 )
 
