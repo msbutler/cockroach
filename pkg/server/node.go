@@ -1480,6 +1480,9 @@ func startGraphiteStatsExporter(
 // startWriteNodeStatus begins periodically persisting status summaries for the
 // node and its stores.
 func (n *Node) startWriteNodeStatus(frequency time.Duration) error {
+	if n.storeCfg.TestingKnobs.DisableNodeStatusRecordingLoop {
+		return nil
+	}
 	ctx := logtags.AddTag(n.AnnotateCtx(context.Background()), "summaries", nil)
 	// Immediately record summaries once on server startup. The update loop below
 	// will only update the key if it exists, to avoid race conditions during

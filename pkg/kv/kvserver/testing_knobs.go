@@ -322,6 +322,9 @@ type StoreTestingKnobs struct {
 	// asynchronous log writes can be randomly made synchronous in tests. Should
 	// be set to true by tests that require or test asynchronous log writes.
 	DisableSyncLogWriteToss bool
+	// DisableNodeStatusRecordingLoop prevents the NodeStatus recording loop from
+	// beginning.
+	DisableNodeStatusRecordingLoop bool
 
 	// SendSnapshot is run after receiving a DelegateRaftSnapshot request but
 	// before any throttling or sending logic.

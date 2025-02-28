@@ -155,6 +155,12 @@ func configureSlimTestServer(params base.TestServerArgs) base.TestServerArgs {
 		}
 		params.Knobs.UpgradeManager.(*upgradebase.TestingKnobs).SkipSomeUpgradeSteps = true
 	}
+	if !cfg.Options.EnableNodeStatusLoop {
+		if params.Knobs.Store == nil {
+			params.Knobs.Store = &kvserver.StoreTestingKnobs{}
+		}
+		params.Knobs.Store.(*kvserver.StoreTestingKnobs).DisableNodeStatusRecordingLoop = true
+	}
 
 	return params
 }

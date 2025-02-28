@@ -174,10 +174,11 @@ type TestServerArgs struct {
 }
 
 type slimOptions struct {
-	EnableSpanConfigJob bool
-	EnableAutoStats     bool
-	EnableTimeseries    bool
-	EnableAllUpgrades   bool
+	EnableSpanConfigJob  bool
+	EnableAutoStats      bool
+	EnableTimeseries     bool
+	EnableAllUpgrades    bool
+	EnableNodeStatusLoop bool
 }
 
 type SlimServerOption func(*slimOptions)
@@ -203,6 +204,12 @@ func WithTimeseries() SlimServerOption {
 func WithAllUpgrades() SlimServerOption {
 	return func(o *slimOptions) {
 		o.EnableAllUpgrades = true
+	}
+}
+
+func WithNodeStatusLoop() SlimServerOption {
+	return func(o *slimOptions) {
+		o.EnableNodeStatusLoop = true
 	}
 }
 
