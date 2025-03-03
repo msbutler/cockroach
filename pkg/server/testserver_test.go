@@ -35,26 +35,34 @@ func BenchmarkTestServerStartup(b *testing.B) {
 
 	for _, tc := range testCases {
 		b.Run(tc.name, func(b *testing.B) {
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			testutils.RunTrueAndFalse(b, "slim", func(b *testing.B, useSlimServer bool) {
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
 
-				args := base.TestServerArgs{
-					DefaultTestTenant: tc.tenantOpt,
-					Settings:          cluster.MakeTestingClusterSettings(),
-					Knobs: base.TestingKnobs{
-						SQLEvalContext: &eval.TestingKnobs{
-							// We disable the randomization of some batch sizes to get consistent
-							// results.
-							ForceProductionValues: true,
+					args := base.TestServerArgs{
+						DefaultTestTenant: tc.tenantOpt,
+						Settings:          cluster.MakeTestingClusterSettings(),
+						Knobs: base.TestingKnobs{
+							SQLEvalContext: &eval.TestingKnobs{
+								// We disable the randomization of some batch sizes to get consistent
+								// results.
+								ForceProductionValues: true,
+							},
 						},
-					},
-				}
-				// Disable leader fortification as it currently causes large variability in runtime.
-				kvserver.RaftLeaderFortificationFractionEnabled.Override(context.Background(), &args.Settings.SV, 0.0)
+					}
+					// Disable leader fortification as it currently causes large variability in runtime.
+					kvserver.RaftLeaderFortificationFractionEnabled.Override(context.Background(), &args.Settings.SV, 0.0)
 
-				s := serverutils.StartServerOnly(b, args)
-				s.Stopper().Stop(context.Background())
-			}
+					var s serverutils.TestServerInterface
+					if useSlimServer {
+						s = serverutils.StartSlimServerOnly(b, args)
+					} else {
+						s = serverutils.StartServerOnly(b, args)
+
+					}
+					s.Stopper().Stop(context.Background())
+				}
+			})
 		})
 	}
 }
