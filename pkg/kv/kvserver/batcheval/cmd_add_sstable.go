@@ -354,8 +354,12 @@ func EvalAddSSTable(
 	} else {
 		stats.ContainsEstimates++
 	}
-
-	ms.Add(stats)
+	if args.IgnoreKeysAboveTimestamp.IsSet() {
+		// EXPIREMENT TO CLOBBER STATS FOR PCR
+		ms = &stats
+	} else {
+		ms.Add(stats)
+	}
 
 	var mvccHistoryMutation *kvserverpb.ReplicatedEvalResult_MVCCHistoryMutation
 	if sstToReqTS.IsEmpty() {

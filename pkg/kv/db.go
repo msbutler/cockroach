@@ -776,7 +776,31 @@ func (db *DB) AddSSTable(
 ) (roachpb.Span, int64, error) {
 	b := &Batch{Header: kvpb.Header{Timestamp: batchTs}}
 	b.addSSTable(begin, end, data, disallowConflicts, disallowShadowingBelow,
-		stats, ingestAsWrites, hlc.Timestamp{} /* sstTimestampToRequestTimestamp */)
+		stats, ingestAsWrites, hlc.Timestamp{} /* sstTimestampToRequestTimestamp */, false)
+	err := getOneErr(db.Run(ctx, b), b)
+	if err != nil {
+		return roachpb.Span{}, 0, err
+	}
+	if l := len(b.response.Responses); l != 1 {
+		return roachpb.Span{}, 0, errors.AssertionFailedf("expected single response, got %d", l)
+	}
+	resp := b.response.Responses[0].GetAddSstable()
+	return resp.RangeSpan, resp.AvailableBytes, nil
+}
+
+func (db *DB) AddSSTableClobberStats(
+	ctx context.Context,
+	begin, end interface{},
+	data []byte,
+	disallowConflicts bool,
+	disallowShadowingBelow hlc.Timestamp,
+	stats *enginepb.MVCCStats,
+	ingestAsWrites bool,
+	batchTs hlc.Timestamp,
+) (roachpb.Span, int64, error) {
+	b := &Batch{Header: kvpb.Header{Timestamp: batchTs}}
+	b.addSSTable(begin, end, data, disallowConflicts, disallowShadowingBelow,
+		stats, ingestAsWrites, hlc.Timestamp{} /* sstTimestampToRequestTimestamp */, true)
 	err := getOneErr(db.Run(ctx, b), b)
 	if err != nil {
 		return roachpb.Span{}, 0, err
@@ -836,7 +860,7 @@ func (db *DB) AddSSTableAtBatchTimestamp(
 	batchTs hlc.Timestamp,
 ) (hlc.Timestamp, roachpb.Span, int64, error) {
 	b := &Batch{Header: kvpb.Header{Timestamp: batchTs}}
-	b.addSSTable(begin, end, data, disallowConflicts, disallowShadowingBelow, stats, ingestAsWrites, batchTs)
+	b.addSSTable(begin, end, data, disallowConflicts, disallowShadowingBelow, stats, ingestAsWrites, batchTs, false)
 	err := getOneErr(db.Run(ctx, b), b)
 	if err != nil {
 		return hlc.Timestamp{}, roachpb.Span{}, 0, err
