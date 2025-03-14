@@ -114,7 +114,7 @@ var DefaultTenantStreamingClustersArgs = TenantStreamingClustersArgs{
 	DestTenantName:      roachpb.TenantName("destination"),
 	DestTenantID:        roachpb.MustMakeTenantID(2),
 	DestNumNodes:        1,
-	DestClusterSettings: DefaultClusterSettings,
+	DestClusterSettings: DefaultDestClusterSettings,
 }
 
 type TenantStreamingClusters struct {
@@ -665,6 +665,28 @@ var DefaultClusterSettings = map[string]string{
 	`kv.closed_timestamp.target_duration`:            `'100ms'`,
 	`kv.rangefeed.closed_timestamp_refresh_interval`: `'200ms'`,
 	`kv.rangefeed.enabled`:                           `true`,
+	// Finer grain checkpoints to keep replicated time close to present.
+	`physical_replication.producer.timestamp_granularity`: `'100ms'`,
+	// Speed up span reconciliation
+	`spanconfig.reconciliation_job.checkpoint_interval`: `'100ms'`,
+	`stream_replication.consumer_heartbeat_frequency`:   `'1s'`,
+	`stream_replication.job_checkpoint_frequency`:       `'100ms'`,
+	`stream_replication.min_checkpoint_frequency`:       `'1s'`,
+	// Large timeout makes test to not fail with unexpected timeout failures.
+	`stream_replication.stream_liveness_track_frequency`: `'2s'`,
+}
+
+var DefaultDestClusterSettings = map[string]string{
+	`bulkio.stream_ingestion.failover_signal_poll_interval`: `'100ms'`,
+	`bulkio.stream_ingestion.minimum_flush_interval`:        `'10ms'`,
+	`jobs.registry.interval.adopt`:                          `'1s'`,
+	`kv.bulk_io_write.small_write_size`:                     `'1'`,
+	//`kv.closed_timestamp.side_transport_interval`:           `'50ms'`,
+	// Speed up the rangefeed. These were set by squinting at the settings set in
+	// the changefeed integration tests.
+	//`kv.closed_timestamp.target_duration`:            `'100ms'`,
+	//`kv.rangefeed.closed_timestamp_refresh_interval`: `'200ms'`,
+	//`kv.rangefeed.enabled`:                           `true`,
 	// Finer grain checkpoints to keep replicated time close to present.
 	`physical_replication.producer.timestamp_granularity`: `'100ms'`,
 	// Speed up span reconciliation
