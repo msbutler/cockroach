@@ -210,7 +210,6 @@ go_test(
         "//build/toolchains:is_heavy": {"test.Pool": "heavy"},
         "//conditions:default": {"test.Pool": "large"},
     }),
-    shard_count = 48,
     deps = [
         "//pkg/backup/backupbase",
         "//pkg/backup/backupdest",
