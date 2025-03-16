@@ -33,6 +33,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlerrors"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqltelemetry"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/errors"
 )
 
@@ -83,6 +84,7 @@ func (p *planner) createDatabase(
 	if err != nil {
 		return nil, false, err
 	}
+	log.Infof(ctx, "creating database %s with ID %d and public schema ID %d", dbName, id, publicSchemaID)
 
 	if database.PrimaryRegion != tree.PrimaryRegionNotSpecifiedName {
 		telemetry.Inc(sqltelemetry.CreateMultiRegionDatabaseCounter)

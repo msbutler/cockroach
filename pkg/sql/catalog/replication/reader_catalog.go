@@ -22,6 +22,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/tabledesc"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/typedesc"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/errors"
 )
@@ -63,6 +64,8 @@ func SetupOrAdvanceStandbyReaderCatalog(
 				if !shouldSetupForReader(fromDesc.GetID(), fromDesc.GetParentID()) {
 					return nil
 				}
+				log.Infof(ctx, "replicating descriptor %s (id: %d)",
+					fromDesc.GetName(), fromDesc.GetID())
 				// Track this descriptor was updated.
 				descriptorsUpdated.Add(fromDesc.GetID())
 				// If there is an existing descriptor with the same ID, we should

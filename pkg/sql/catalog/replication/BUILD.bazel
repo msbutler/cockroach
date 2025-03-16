@@ -20,6 +20,7 @@ go_library(
         "//pkg/sql/catalog/tabledesc",
         "//pkg/sql/catalog/typedesc",
         "//pkg/util/hlc",
+        "//pkg/util/log",
         "//pkg/util/protoutil",
         "@com_github_cockroachdb_errors//:errors",
     ],
