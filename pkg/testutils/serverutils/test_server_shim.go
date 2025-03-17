@@ -33,7 +33,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
-	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
 	"github.com/cockroachdb/errors"
 )
@@ -114,8 +113,8 @@ func ShouldStartDefaultTestTenant(
 		shared = false
 	default:
 		// If no explicit process mode was selected, then randomly select one.
-		rng, _ := randutil.NewTestRand()
-		shared = rng.Intn(2) == 0
+		// For benchmarking.
+		shared = false
 	}
 
 	// Explicit case for enabling the default test tenant, but with a
@@ -149,7 +148,7 @@ func ShouldStartDefaultTestTenant(
 	// Note: we ask the metamorphic framework for a "disable" value, instead
 	// of an "enable" value, because it probabilistically returns its default value
 	// more often than not and that is what we want.
-	enabled := !metamorphic.ConstantWithTestBoolWithoutLogging("disable-test-tenant", false)
+	enabled := !metamorphic.ConstantWithTestBoolWithoutLogging("disable-test-tenant", true)
 	if enabled && t != nil {
 		t.Log(defaultTestTenantMessage(shared))
 	}
