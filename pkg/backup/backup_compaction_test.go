@@ -428,8 +428,6 @@ func TestScheduledBackupCompaction(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	skip.WithIssue(t, 143394, "flaky test")
-
 	ctx := context.Background()
 	th, cleanup := newTestHelper(t)
 	defer cleanup()
