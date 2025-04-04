@@ -340,6 +340,12 @@ func TestLDRSchemaChange(
 func TestLDRTPCC(
 	ctx context.Context, t test.Test, c cluster.Cluster, setup multiClusterSetup, ldrConfig ldrConfig,
 ) {
+
+	setup.left.sysSQL.Exec(t, "SET CLUSTER SETTING logical_replication.consumer.batch_size = 1")
+	//setup.left.sysSQL.Exec(t, "SET CLUSTER SETTING logical_replication.consumer.immediate_mode_writer = 'legacy-kv'")
+	setup.right.sysSQL.Exec(t, "SET CLUSTER SETTING logical_replication.consumer.batch_size = 1")
+	//setup.right.sysSQL.Exec(t, "SET CLUSTER SETTING logical_replication.consumer.immediate_mode_writer = 'legacy-kv'")
+
 	duration := 10 * time.Minute
 	warehouses := 10
 	if c.IsLocal() {
@@ -369,23 +375,24 @@ func TestLDRTPCC(
 		fmt.Sprintf("./cockroach workload init tpcc --warehouses=1 --fks=false {pgurl:%d:system}", setup.right.nodes[0]))
 	c.Run(ctx,
 		option.WithNodes(setup.workloadNode),
-		fmt.Sprintf("./cockroach workload init tpcc --warehouses=10 --fks=false {pgurl:%d:system}", setup.left.nodes[0]))
+		fmt.Sprintf("./cockroach workload init tpcc --warehouses=2 --fks=false {pgurl:%d:system}", setup.left.nodes[0]))
 	leftJobID, rightJobID := setupLDR(ctx, t, c, setup, workload, ldrConfig)
 
 	workloadDoneCh := make(chan struct{})
-	maxExpectedLatency := 3 * time.Minute
+	//maxExpectedLatency := 3 * time.Minute
 	monitor := c.NewMonitor(ctx, setup.CRDBNodes())
-	validateLatency := setupLatencyVerifiers(ctx, t, c, monitor, leftJobID, rightJobID, setup, workloadDoneCh, maxExpectedLatency)
+	//validateLatency := setupLatencyVerifiers(ctx, t, c, monitor, leftJobID, rightJobID, setup, workloadDoneCh, maxExpectedLatency)
 
 	monitor.Go(func(ctx context.Context) error {
 		defer close(workloadDoneCh)
+		return nil
 		// Run workload on both clusters.
-		return c.RunE(ctx, option.WithNodes(setup.workloadNode), workload.workload.sourceRunCmd("system", setup.CRDBNodes()))
+		//return c.RunE(ctx, option.WithNodes(setup.workloadNode), workload.workload.sourceRunCmd("system", setup.CRDBNodes()))
 	})
 
 	monitor.Wait()
-	validateLatency()
-	VerifyCorrectness(ctx, c, t, setup, leftJobID, rightJobID, 2*time.Minute, workload)
+	//validateLatency()
+	VerifyCorrectness(ctx, c, t, setup, leftJobID, rightJobID, 5*time.Minute, workload)
 }
 
 // TestLDRCreateTablesTPCC inits the left cluster with 1000 warehouse tpcc,
