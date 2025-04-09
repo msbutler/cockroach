@@ -168,7 +168,10 @@ func optInToDiagnosticsStatReporting(
 	_, err := deps.InternalExecutor.Exec(
 		ctx, "optInToDiagnosticsStatReporting", nil, /* txn */
 		`SET CLUSTER SETTING diagnostics.reporting.enabled = true`)
-	return err
+	if err != nil {
+		panic(err)
+	}
+	return nil
 }
 
 func populateVersionSetting(
