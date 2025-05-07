@@ -10,6 +10,7 @@ import (
 	gosql "database/sql"
 	"fmt"
 	"math/rand"
+	"net/url"
 	"sync"
 	"time"
 
@@ -168,6 +169,17 @@ func (lm *ldrMixed) commonSetup(
 	if err != nil {
 		return "", err
 	}
+
+	username := "replication_user"
+	password := "password"
+	if err := h.Exec(r, fmt.Sprintf("CREATE USER IF NOT EXISTS %s PASSWORD '%s'", username, password)); err != nil {
+		return "", err
+	}
+	if err := h.Exec(r, fmt.Sprintf("GRANT REPLICATION TO %s", username)); err != nil {
+		return "", err
+	}
+	pgURL.User = url.UserPassword(username, "password")
+
 	return pgURL.String(), nil
 }
 
