@@ -34,6 +34,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/ts/tspb"
 	"github.com/cockroachdb/cockroach/pkg/util/httputil"
 	"github.com/cockroachdb/cockroach/pkg/util/randutil"
+	"github.com/cockroachdb/cockroach/pkg/util/retry"
 	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/workload/histogram"
 	"github.com/cockroachdb/errors"
@@ -440,6 +441,28 @@ func registerRestore(r registry.Registry) {
 						return err
 					}
 
+					_, err = db.Exec("CREATE TABLE defaultdb.empty (a INT PRIMARY KEY)")
+					if err != nil {
+						return errors.Wrapf(err, "error creating table")
+					}
+					if err := retry.ForDuration(testutils.DefaultSucceedsSoonDuration, func() error {
+						var count int
+						err := db.QueryRow(
+							`WITH ranges AS (SHOW RANGES FROM TABLE defaultdb.empty) SELECT  cardinality(replicas) FROM ranges`).Scan(&count)
+						if err != nil {
+							t.L().Printf("error querying ranges: %s", err)
+							return err
+						}
+
+						if count != 3 {
+							t.L().Printf("expected 3 replicas, but found %d", count)
+							return fmt.Errorf("expected 3 replicas, but found %d", count)
+						}
+						return nil
+					}); err != nil {
+						t.L().Printf("error waiting for table to be fully replicated: %s", err)
+						return err
+					}
 					t.Status(`running restore`)
 					metricCollector := rd.initRestorePerfMetrics(ctx, durationGauge)
 					if err := rd.run(ctx, "DATABASE "+rd.sp.backup.fixture.DatabaseName()); err != nil {
