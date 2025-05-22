@@ -521,6 +521,13 @@ func runGenerativeSplitAndScatter(
 		var chunk restoreEntryChunk
 		for entry := range restoreSpanEntriesCh {
 			entry.ProgressIdx = idx
+			if idx == 0 {
+				// Split at the first entry to ensure the first chunk has its own
+				// range.
+				if err := baseSplitAndScatterer.split(ctx, flowCtx.Codec(), entry.Span.Key); err != nil {
+					return err
+				}
+			}
 			idx++
 			if len(chunk.entries) == int(spec.ChunkSize) {
 				// The current chunk is full, so this entry will be the start of the
