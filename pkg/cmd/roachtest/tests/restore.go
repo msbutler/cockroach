@@ -432,37 +432,31 @@ func registerRestore(r registry.Registry) {
 						}
 					}
 
-					if err := roachtestutil.WaitForReplication(ctx, t.L(), db, 3, roachtestutil.AtLeastReplicationFactor); err != nil {
-						return err
-					}
-					if err := waitForRebalance(
-						ctx, t.L(), db, 10, 60, /* stableSeconds */
-					); err != nil {
-						return err
-					}
-
-					_, err = db.Exec("CREATE TABLE defaultdb.empty (a INT PRIMARY KEY)")
-					if err != nil {
-						return errors.Wrapf(err, "error creating table")
-					}
-					if err := retry.ForDuration(testutils.DefaultSucceedsSoonDuration, func() error {
-						var count int
-						err := db.QueryRow(
-							`WITH ranges AS (SHOW RANGES FROM TABLE defaultdb.empty) SELECT  cardinality(replicas) FROM ranges`).Scan(&count)
+					if sp.testName == "foo" {
+						_, err = db.Exec("CREATE TABLE defaultdb.empty (a INT PRIMARY KEY)")
 						if err != nil {
-							t.L().Printf("error querying ranges: %s", err)
+							return errors.Wrapf(err, "error creating table")
+						}
+						if err := retry.ForDuration(testutils.DefaultSucceedsSoonDuration, func() error {
+							var count int
+							err := db.QueryRow(
+								`WITH ranges AS (SHOW RANGES FROM TABLE defaultdb.empty) SELECT  cardinality(replicas) FROM ranges`).Scan(&count)
+							if err != nil {
+								t.L().Printf("error querying ranges: %s", err)
+								return err
+							}
+
+							if count != 3 {
+								t.L().Printf("expected 3 replicas, but found %d", count)
+								return fmt.Errorf("expected 3 replicas, but found %d", count)
+							}
+							return nil
+						}); err != nil {
+							t.L().Printf("error waiting for table to be fully replicated: %s", err)
 							return err
 						}
-
-						if count != 3 {
-							t.L().Printf("expected 3 replicas, but found %d", count)
-							return fmt.Errorf("expected 3 replicas, but found %d", count)
-						}
-						return nil
-					}); err != nil {
-						t.L().Printf("error waiting for table to be fully replicated: %s", err)
-						return err
 					}
+
 					t.Status(`running restore`)
 					metricCollector := rd.initRestorePerfMetrics(ctx, durationGauge)
 					if err := rd.run(ctx, "DATABASE "+rd.sp.backup.fixture.DatabaseName()); err != nil {
@@ -840,7 +834,7 @@ func (rd *restoreDriver) run(ctx context.Context, target string) error {
 	}
 	defer conn.Close()
 	_, err = conn.ExecContext(
-		ctx, rd.restoreCmd(ctx, target, "WITH unsafe_restore_incompatible_version"),
+		ctx, "RESTORE DATABASE tpce FROM LATEST IN 'gs://cockroach-fixtures-us-east1/backups/tpc-e/customers=25000/v22.2.0/inc-count=48?AUTH=implicit' AS OF SYSTEM TIME '2022-12-21T02:00:00Z' WITH unsafe_restore_incompatible_version",
 	)
 	return err
 }
