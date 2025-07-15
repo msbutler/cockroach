@@ -24,6 +24,8 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/jobs"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/keys"
+	"github.com/cockroachdb/cockroach/pkg/kv"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/protectedts/ptpb"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -1649,4 +1651,72 @@ func TestReaderTenantUpgrade(t *testing.T) {
 	// Ensure the reader tenant is on the new version
 	c.ReaderTenantSQL.CheckQueryResults(t, "SHOW CLUSTER SETTING version",
 		[][]string{{latestVersion}})
+}
+
+// TestComputeStatsDiff is an end to end test that ensures that mvcc stats are
+// computed correctly on existing keyspace.
+func TestComputeStatsDiff(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	ctx := context.Background()
+	args := replicationtestutils.DefaultTenantStreamingClustersArgs
+	c, cleanup := replicationtestutils.CreateTenantStreamingClusters(ctx, t, args)
+	defer cleanup()
+
+	c.DestSysSQL.Exec(t, "SET CLUSTER SETTING bulkio.ingest.compute_stats_diff_in_stream_batcher.enabled = true")
+
+	c.SrcTenantSQL.Exec(t, "CREATE DATABASE test")
+	c.SrcTenantSQL.Exec(t, "CREATE TABLE test.x (id INT PRIMARY KEY, n INT)")
+	c.SrcTenantSQL.Exec(t, "INSERT INTO test.x VALUES (1, 1)")
+
+	producerJobID, ingestionJobID := c.StartStreamReplication(ctx)
+
+	jobutils.WaitForJobToRun(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
+	jobutils.WaitForJobToRun(c.T, c.DestSysSQL, jobspb.JobID(ingestionJobID))
+
+	c.WaitUntilStartTimeReached(jobspb.JobID(ingestionJobID))
+
+	// Pause the ingestion job
+	c.DestSysSQL.Exec(t, fmt.Sprintf("PAUSE JOB %d", ingestionJobID))
+	jobutils.WaitForJobToPause(t, c.DestSysSQL, jobspb.JobID(ingestionJobID))
+
+	// Update the row in the source table
+	c.SrcTenantSQL.Exec(t, "UPDATE test.x SET n = '2' WHERE id = 1")
+
+	// Resume the ingestion job
+	c.DestSysSQL.Exec(t, fmt.Sprintf("RESUME JOB %d", ingestionJobID))
+	jobutils.WaitForJobToRun(t, c.DestSysSQL, jobspb.JobID(ingestionJobID))
+
+	// Wait for the updated data to be replicated
+	srcTime := c.SrcCluster.Server(0).Clock().Now()
+	c.WaitUntilReplicatedTime(srcTime, jobspb.JobID(ingestionJobID))
+	jobutils.WaitForJobToPause(t, c.DestSysSQL, jobspb.JobID(ingestionJobID))
+
+	spanStatsQuery := fmt.Sprintf(`SELECT stats->'approximate_total_stats'->'live_count' FROM crdb_internal.tenant_span_stats(ARRAY(SELECT(crdb_internal.tenant_span(%d)[1],crdb_internal.tenant_span(%d)[2])))`, args.DestTenantID)
+
+	var liveCount int64
+	c.DestSysSQL.QueryRow(t, spanStatsQuery).Scan(&liveCount)
+
+	// Recompute stats on the destination tenant's table. If PCR stats were
+	// innacurate, then the mvcc stats before and after the recomputation would be
+	// different.
+	var tableID int
+	c.SrcTenantSQL.QueryRow(t, "SELECT id FROM system.namespace WHERE name = 'x'").Scan(&tableID)
+	tenantID := c.Args.DestTenantID
+	codec := keys.MakeSQLCodec(tenantID)
+	tableSpan := codec.TableSpan(uint32(tableID))
+
+	req := kvpb.RecomputeStatsRequest{
+		RequestHeader: kvpb.RequestHeader{Key: tableSpan.Key},
+	}
+	var b kv.Batch
+	b.AddRawRequest(&req)
+	err := c.DestSysServer.DB().Run(ctx, &b)
+	require.NoError(t, err)
+
+	var newLiveCount int64
+	c.DestSysSQL.QueryRow(t, spanStatsQuery).Scan(&newLiveCount)
+
+	require.Equal(t, liveCount, newLiveCount, "The live count should be the same before and after recomputing stats")
 }
