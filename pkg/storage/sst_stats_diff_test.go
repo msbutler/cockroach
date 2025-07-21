@@ -70,7 +70,7 @@ func TestMVCCComputeSSTStatsDiff(t *testing.T) {
 		kvs := storageutils.KVs{}
 		for i := 0; i < len(stringifiedKVs); i += 2 {
 			key := string(stringifiedKVs[i])
-			ts := int64(stringifiedKVs[i+1])
+			ts := int64(stringifiedKVs[i+1]) * 1e9
 			value := key
 			kv := storageutils.PointKV(key, int(ts), value)
 			kvs = append(kvs, kv)
@@ -80,8 +80,16 @@ func TestMVCCComputeSSTStatsDiff(t *testing.T) {
 
 	testCases := []struct {
 		name string
-		sst  storageutils.KVs
-		eng  storageutils.KVs
+		// sst describes an sst that the test will run ComputeStatsDiff on
+		sst storageutils.KVs
+
+		// eng describes the keys in the existing key space
+		eng storageutils.KVs
+
+		// invalid is an sst that violates the assumptions held by ComputeStatsDiff,
+		// so when the test calls ComputeStatsDiff on it, estimates must be
+		// returned. Further, invalid should return identical stats to the sst.
+		invalid storageutils.KVs
 	}{
 		{
 			name: "emptyKeyspace",
@@ -94,14 +102,16 @@ func TestMVCCComputeSSTStatsDiff(t *testing.T) {
 			eng:  p(""),
 		},
 		{
-			name: "insert",
-			sst:  p("a1"),
-			eng:  p("b1"),
+			name:    "insert",
+			sst:     p("a2"),
+			eng:     p("b2"),
+			invalid: p("a2b1"),
 		},
 		{
-			name: "update",
-			sst:  p("a2"),
-			eng:  p("a1"),
+			name:    "update",
+			sst:     p("a3"),
+			eng:     p("a2"),
+			invalid: p("a2a1"),
 		},
 		{
 			name: "delete",
@@ -191,6 +201,19 @@ func TestMVCCComputeSSTStatsDiff(t *testing.T) {
 				statsDelta, err := storage.ComputeSSTStatsDiff(
 					ctx, sstEncoded, engine, updateTime, start, end)
 				require.NoError(t, err)
+
+				if !randomDeletes && len(tc.invalid) > 0 {
+					invalidSSTEncoded, invalidStartUnversioned, invalidEndUnversioned := storageutils.MakeSST(t, st, tc.invalid)
+					start := storage.MVCCKey{Key: invalidStartUnversioned}
+					end := storage.MVCCKey{Key: invalidEndUnversioned}
+
+					statsEstimatesDelta, err := storage.ComputeSSTStatsDiff(
+						ctx, invalidSSTEncoded, engine, updateTime, start, end)
+					require.NoError(t, err)
+					require.Greater(t, statsEstimatesDelta.ContainsEstimates, int64(0))
+					statsEstimatesDelta.ContainsEstimates = 0
+					require.Equal(t, statsDelta, statsEstimatesDelta)
+				}
 
 				require.NoError(t, fs.WriteFile(engine.Env(), "sst", sstEncoded, fs.UnspecifiedWriteCategory))
 				require.NoError(t, engine.IngestLocalFiles(ctx, []string{"sst"}))

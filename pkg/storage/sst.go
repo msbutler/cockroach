@@ -221,13 +221,82 @@ func ComputeSSTStatsDiff(
 		return ms, errors.New("SST is empty")
 	}
 
-	// processDuplicates advances the sst iterator to the next roachpb key, as all
-	// remaining versions of this sst key should not contribute to stats.
+	// processDuplicates detects if the sst violates an assumption required to
+	// compute accurate stats: if an engine key overlaps with an sst key (i.e.
+	// engKey.Key == iterKey.Key), the sst key shadows the latest eng key or is a
+	// duplicate. In other words, if there exists an sst key that the eng
+	// also shadows, but is not already in the engine, then we bump the
+	// containsEstimate field.
 	processDuplicates := func() error {
-		// TODO (msbutler): detect if the sst contains a version of the key not in
-		// the engine, and if so, increment ContainsEstimates.
-		sstIter.NextKey()
-		return nil
+		currentEstimateCount := ms.ContainsEstimates
+		defer func() {
+			// If we detect the sst version history anomaly, that implies the sstIter
+			// has not advanced to the next key. Advance the sstIter to the next key to continue computing stats.
+			if currentEstimateCount < ms.ContainsEstimates {
+				sstIter.NextKey()
+			}
+		}()
+
+		checkEngIterValid := func() (bool, error) {
+			ok, err := engIter.Valid()
+			if !ok {
+				// We've exhausted the eng iter after detecting sstKey == engKey, but
+				// there there exists a valid sstIter key that is not already in the
+				// engine.
+				//
+				// sst:    a2
+				// eng: a3
+				ms.ContainsEstimates++
+			}
+			return ok, err
+		}
+
+		curSSTKey := sstIter.UnsafeKey()
+
+		// First advance the engine iterator to the sstIterator mvcc key. Recall we
+		// entered this function with the following properties: sstKey == engKey and
+		// engKeyTimestamp > sstKeyTimestamp-- i.e. a4 or a3 below:
+		//
+		// sst:         a2, a1
+		// eng: a4, a3, a2, a1
+		engIter.SeekGE(curSSTKey)
+		if ok, err := checkEngIterValid(); !ok || err != nil {
+			return err
+		}
+
+		newSSTKey := MVCCKey{}
+		for {
+			// At the top of the loop, both are iterators are valid, and should
+			// be equal if shadowing assumptions are held.
+			engIterKey = engIter.UnsafeKey()
+			if curSSTKey.Compare(engIterKey) != 0 {
+				// The current sstKey does not exist in the engine.
+				ms.ContainsEstimates++
+				return nil
+			}
+
+			// The current engine and sst keys match. Move to next mvcc verstion.
+			sstIter.Next()
+
+			if ok, err := sstIter.Valid(); !ok || err != nil {
+				return err
+			}
+			newSSTKey = sstIter.UnsafeKey()
+
+			if curSSTKey.Key.Less(newSSTKey.Key) {
+				// sstIterator now lives on the next key, so we have finished processing
+				// duplicates.
+				return nil
+			}
+
+			curSSTKey.Key = append(curSSTKey.Key[:0], newSSTKey.Key...)
+			curSSTKey.Timestamp = newSSTKey.Timestamp
+
+			engIter.Next()
+			if ok, err := checkEngIterValid(); !ok || err != nil {
+				return err
+			}
+		}
 	}
 
 	prevSSTKey := NilKey
