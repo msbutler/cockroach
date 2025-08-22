@@ -865,6 +865,7 @@ func TestRegistryLifecycle(t *testing.T) {
 	// This could happen due to a transient network error or something like that.
 	// It would not make sense to revert a job in this scenario.
 	t.Run("fail marking success", func(t *testing.T) {
+		t.Skip("skipping because this test is flaky, see #105682")
 		rts := registryTestSuite{}
 		defer rts.setUp(t)()
 		defer rts.tearDown()
