@@ -2477,6 +2477,13 @@ throttled they do count towards 'delay.total' and 'delay.enginebackpressure'.
 		Measurement: "Ingestions",
 		Unit:        metric.Unit_COUNT,
 	}
+	metaAddSSTableStatsFallback = metric.Metadata{
+		Name:        "addsstable.stats.fallback",
+		Help:        `Number of SSTables ingested that fell back to stats estimates.`,
+		Measurement: "Ingestions",
+		Unit:        metric.Unit_COUNT,
+	}
+
 	metaAddSSTableEvalTotalDelay = metric.Metadata{
 		Name:        "addsstable.delay.total",
 		Help:        "Amount by which evaluation of AddSSTable requests was delayed",
@@ -3238,6 +3245,7 @@ type StoreMetrics struct {
 	AddSSTableAsWrites            *metric.Counter
 	AddSSTableProposalTotalDelay  *metric.Counter
 	AddSSTableProposalEngineDelay *metric.Counter
+	AddSSTableStatsFallback       *metric.Counter
 
 	// Export request stats.
 	ExportRequestProposalTotalDelay *metric.Counter
@@ -4024,6 +4032,7 @@ func newStoreMetrics(histogramWindow time.Duration) *StoreMetrics {
 		AddSSTableApplicationCopies:   metric.NewCounter(metaAddSSTableApplicationCopies),
 		AddSSTableProposalTotalDelay:  metric.NewCounter(metaAddSSTableEvalTotalDelay),
 		AddSSTableProposalEngineDelay: metric.NewCounter(metaAddSSTableEvalEngineDelay),
+		AddSSTableStatsFallback:       metric.NewCounter(metaAddSSTableStatsFallback),
 
 		// ExportRequest proposal.
 		ExportRequestProposalTotalDelay: metric.NewCounter(metaExportEvalTotalDelay),
@@ -4415,6 +4424,9 @@ func (sm *StoreMetrics) handleMetricsResult(ctx context.Context, metric result.M
 
 	sm.AddSSTableAsWrites.Inc(int64(metric.AddSSTableAsWrites))
 	metric.AddSSTableAsWrites = 0
+
+	sm.AddSSTableStatsFallback.Inc(int64(metric.AddSSTableStatsFallback))
+	metric.AddSSTableStatsFallback = 0
 
 	sm.SplitsWithEstimatedStats.Inc(int64(metric.SplitsWithEstimatedStats))
 	metric.SplitsWithEstimatedStats = 0

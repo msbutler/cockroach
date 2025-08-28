@@ -17,6 +17,7 @@ type Metrics struct {
 	ResolveAbort                 int // non-poisoning intent abort evaluated successfully
 	ResolvePoison                int // poisoning intent abort evaluated successfully
 	AddSSTableAsWrites           int // AddSSTable requests with IngestAsWrites set
+	AddSSTableStatsFallback      int
 	SplitsWithEstimatedStats     int // Splits that computed stats estimates
 	SplitEstimatedTotalBytesDiff int // Difference between pre- and post-split total bytes.
 }
@@ -32,6 +33,7 @@ func (mt *Metrics) Add(o Metrics) {
 	mt.ResolveAbort += o.ResolveAbort
 	mt.ResolvePoison += o.ResolvePoison
 	mt.AddSSTableAsWrites += o.AddSSTableAsWrites
+	mt.AddSSTableStatsFallback += o.AddSSTableStatsFallback
 	mt.SplitsWithEstimatedStats += o.SplitsWithEstimatedStats
 	mt.SplitEstimatedTotalBytesDiff += o.SplitEstimatedTotalBytesDiff
 }

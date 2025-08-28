@@ -295,12 +295,16 @@ func EvalAddSSTable(
 	if checkConflicts {
 		stats.Add(checkConflictsStatsDelta)
 	}
+	var statsFallback int
 	if args.ComputeStatsDiff {
 		statsDiff, err := computeSSTStatsDiffWithFallback(ctx, sst, readWriter, h.Timestamp.WallTime, start, end)
 		if err != nil {
 			return result.Result{}, errors.Wrap(err, "computing SST stats diff")
 		}
 		stats.Add(statsDiff)
+		if statsDiff.ContainsEstimates > 0 {
+			statsFallback = 1
+		}
 	} else if args.MVCCStats != nil {
 		stats.Add(*args.MVCCStats)
 		if !checkConflicts {
@@ -462,6 +466,10 @@ func EvalAddSSTable(
 			},
 			MVCCHistoryMutation: mvccHistoryMutation,
 		},
+		Local: result.LocalResult{
+			Metrics: &result.Metrics{
+				AddSSTableStatsFallback: statsFallback,
+			}},
 	}, nil
 }
 
@@ -476,6 +484,7 @@ func computeSSTStatsDiffWithFallback(
 		ctx, sst, readWriter, nowNanos, start, end)
 	if errors.IsAny(err, storage.ComputeSSTStatsDiffReaderHasRangeKeys, storage.ComputeStatsDiffViolation) {
 		log.Warningf(ctx, "computing SST stats as estimates because of ComputeSSTStatsDiff error: %s", err)
+
 		sstStats, err := computeSSTStats(ctx, sst, nowNanos)
 		if err != nil {
 			return enginepb.MVCCStats{}, errors.Wrap(err, "error computing SST stats during fallback")

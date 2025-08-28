@@ -1173,7 +1173,9 @@ func (rd *replicationDriver) main(ctx context.Context) {
 
 	rd.t.Status(fmt.Sprintf("waiting for replication stream to cutover to %s", cutoverTo))
 	actualCutoverTime := rd.stopReplicationStream(ctx, ingestionJobID, cutoverTime)
-
+	if actualCutoverTime != hlc.MaxTimestamp {
+		rd.t.Fatal("boom")
+	}
 	rd.metrics.cutoverTo = newMetricSnapshot(metricSnapper, actualCutoverTime.GoTime())
 	rd.metrics.cutoverEnd = newMetricSnapshot(metricSnapper, timeutil.Now())
 
@@ -1198,6 +1200,7 @@ func (rd *replicationDriver) main(ctx context.Context) {
 		rd.onFingerprintMismatch(ctx, retainedTime, actualCutoverTime)
 	}
 	lv.assertValid(rd.t)
+
 }
 
 func c2cRegisterWrapper(

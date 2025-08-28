@@ -10799,6 +10799,14 @@ layers:
       unit: COUNT
       aggregation: AVG
       derivative: NON_NEGATIVE_DERIVATIVE
+    - name: addsstable.stats.fallback
+      exported_name: addsstable_stats_fallback
+      description: Number of SSTables ingested that fell back to stats estimates.
+      y_axis_label: Ingestions
+      type: COUNTER
+      unit: COUNT
+      aggregation: AVG
+      derivative: NON_NEGATIVE_DERIVATIVE
     - name: admission.admitted.elastic-cpu
       exported_name: admission_admitted_elastic_cpu
       description: Number of requests admitted
