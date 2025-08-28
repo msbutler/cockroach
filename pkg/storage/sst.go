@@ -241,7 +241,8 @@ func ComputeSSTStatsDiff(
 				//
 				// sst:    a2
 				// eng: a3
-				return ComputeStatsDiffViolation
+				return errors.Wrapf(ComputeStatsDiffViolation, "eng iter exhausted: prevSSTKey %s, sstKey %s, engIterKey %s",
+					redact.Safe(prevSSTIterKey), redact.Safe(sstIterKey), redact.Safe(engIterKey))
 
 			}
 			return nil
@@ -272,7 +273,7 @@ func ComputeSSTStatsDiff(
 				nextCount++
 			}
 			if err := checkEngIterValid(); err != nil {
-				return err
+				return errors.Wrapf(err, "initial advancing")
 			}
 			engIterKey = engIter.UnsafeKey()
 		}
@@ -282,7 +283,8 @@ func ComputeSSTStatsDiff(
 			// be equal if shadowing assumptions are held.
 			if sstIterKey.Compare(engIterKey) != 0 {
 				// The current sstKey does not exist in the engine.
-				return ComputeStatsDiffViolation
+				return errors.Wrapf(ComputeStatsDiffViolation, "classic shadow: prevSSTKey %s, sstIterKey %s, engIterKey %s",
+					redact.Safe(prevSSTIterKey), redact.Safe(sstIterKey), redact.Safe(engIterKey))
 			}
 
 			// The current engine and sst keys match. Move to next mvcc verstion.
@@ -305,7 +307,7 @@ func ComputeSSTStatsDiff(
 
 			engIter.Next()
 			if err := checkEngIterValid(); err != nil {
-				return err
+				return errors.Wrapf(err, "after advancing")
 			}
 			engIterKey = engIter.UnsafeKey()
 		}
