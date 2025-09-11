@@ -2135,6 +2135,7 @@ func destClusterSettings(
 		`SET CLUSTER SETTING kv.lease.reject_on_leader_unknown.enabled = true;`,
 		`SET CLUSTER SETTING stream_replication.replan_flow_threshold = 0.1;`,
 		`SET CLUSTER SETTING bulkio.ingest.compute_stats_diff_in_stream_batcher.enabled = true;`,
+		`SET CLUSTER SETTING server.debug.default_vmodule = 'sstbatcher=3';`,
 	)
 
 	if additionalDuration != 0 {
