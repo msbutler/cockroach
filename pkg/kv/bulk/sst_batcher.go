@@ -583,14 +583,19 @@ func (b *SSTBatcher) flushIfNeeded(ctx context.Context, nextKey roachpb.Key) err
 		// That said, only do this if we are only moderately over the flush target;
 		// if we are subtantially over the limit, just flush the partial row as we
 		// cannot buffer indefinitely.
+		prevRow, prevErr := keys.EnsureSafeSplitKey(b.batch.endKey)
+		nextRow, nextErr := keys.EnsureSafeSplitKey(nextKey)
+		midkey := prevErr == nil && nextErr == nil && bytes.Equal(prevRow, nextRow)
 		if b.batch.sstWriter.DataSize < 2*flushLimit {
-			prevRow, prevErr := keys.EnsureSafeSplitKey(b.batch.endKey)
-			nextRow, nextErr := keys.EnsureSafeSplitKey(nextKey)
-			if prevErr == nil && nextErr == nil && bytes.Equal(prevRow, nextRow) {
+			if midkey {
 				// An error decoding either key implies it is not a valid row key and thus
 				// not the same row for our purposes; we don't care what the error is.
 				return nil // keep going to row boundary.
 			}
+		}
+		if midkey {
+			log.Infof(ctx, "sized based flush midkey. last key %s, next key %s",
+				roachpb.Key(b.batch.endKey), nextKey)
 		}
 
 		if b.mustSyncBeforeFlush {
