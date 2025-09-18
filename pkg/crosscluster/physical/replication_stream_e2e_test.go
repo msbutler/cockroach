@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	apd "github.com/cockroachdb/apd/v3"
 	"github.com/cockroachdb/cockroach/pkg/base"
 	_ "github.com/cockroachdb/cockroach/pkg/cloud/impl"
 	"github.com/cockroachdb/cockroach/pkg/clusterversion"
@@ -1651,6 +1652,74 @@ func TestReaderTenantUpgrade(t *testing.T) {
 	// Ensure the reader tenant is on the new version
 	c.ReaderTenantSQL.CheckQueryResults(t, "SHOW CLUSTER SETTING version",
 		[][]string{{latestVersion}})
+}
+
+func TestReaderTenantPrivs(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	beginTS := timeutil.Now()
+	ctx := context.Background()
+	args := replicationtestutils.DefaultTenantStreamingClustersArgs
+	args.EnableReaderTenant = true
+	c, cleanup := replicationtestutils.CreateTenantStreamingClusters(ctx, t, args)
+	defer cleanup()
+
+	c.SrcTenantSQL.Exec(t, `CREATE TABLE foo (i INT PRIMARY KEY)`)
+	c.SrcTenantSQL.Exec(t, `CREATE TABLE baz (i INT PRIMARY KEY)`)
+	c.SrcTenantSQL.Exec(t, fmt.Sprintf("CREATE USER %s", username.TestUser))
+	c.SrcTenantSQL.Exec(t, fmt.Sprintf(`GRANT SELECT ON foo TO %s`, username.TestUser))
+	testUserSrc := sqlutils.MakeSQLRunner(c.SrcTenantServer.SQLConn(t, serverutils.User(username.TestUser)))
+	testUserSrc.Exec(t, `SELECT * FROM foo`)
+
+	c.DestSysSQL.Exec(t, fmt.Sprintf(`SET CLUSTER SETTING physical_cluster_replication.reader_system_table_id_offset = %d`, 1000))
+
+	producerJobID, ingestionJobID := c.StartStreamReplication(ctx)
+
+	jobutils.WaitForJobToRun(c.T, c.SrcSysSQL, jobspb.JobID(producerJobID))
+	jobutils.WaitForJobToRun(c.T, c.DestSysSQL, jobspb.JobID(ingestionJobID))
+	t.Logf("test setup took %s", timeutil.Since(beginTS))
+
+	readerTenantName := fmt.Sprintf("%s-readonly", args.DestTenantName)
+
+	srcTime := c.SrcCluster.Server(0).Clock().Now()
+	c.WaitUntilReplicatedTime(srcTime, jobspb.JobID(ingestionJobID))
+
+	stats := replicationtestutils.TestingGetStreamIngestionStatsFromReplicationJob(t, ctx, c.DestSysSQL, ingestionJobID)
+	readerTenantID := stats.IngestionDetails.ReadTenantID
+	require.NotNil(t, readerTenantID)
+
+	c.ConnectToReaderTenant(ctx, readerTenantID, readerTenantName)
+
+	defaultDBQuery := `
+USE defaultdb;
+CREATE TABLE a (i INT PRIMARY KEY);
+INSERT INTO a VALUES (1);
+`
+
+	c.SrcTenantSQL.Exec(t, defaultDBQuery)
+	waitForPollerJobToStartDest(t, c, ingestionJobID)
+	pollerResolvedTime := waitForPollerTimeToAdvance(t, c.ReaderTenantSQL, apd.New(0, 0))
+
+	// stop reader tenant service and then start it again
+	c.DestSysSQL.Exec(t, fmt.Sprintf("ALTER VIRTUAL CLUSTER '%s' STOP SERVICE", readerTenantName))
+	waitUntilTenantServerStopped(t, c.DestSysServer, readerTenantName)
+	c.DestSysSQL.Exec(t, fmt.Sprintf("ALTER VIRTUAL CLUSTER '%s' START SERVICE SHARED", readerTenantName))
+
+	readerConn := c.DestCluster.Server(0).SystemLayer().SQLConn(t, serverutils.DBName("cluster:"+readerTenantName+"/defaultdb"))
+	testutils.SucceedsSoon(t, func() error { return readerConn.Ping() })
+	c.ReaderTenantSQL = sqlutils.MakeSQLRunner(readerConn)
+
+	testutils.SucceedsSoon(t, func() error {
+		if _, err := c.ReaderTenantSQL.DB.ExecContext(ctx, `SHOW TABLES`); err != nil {
+			var privilegeTableID int
+			c.ReaderTenantSQL.QueryRow(t, `SELECT id FROM system.namespace WHERE name = 'privileges'`).Scan(&privilegeTableID)
+			return errors.Wrapf(err, "error running SHOW TABLES, likely due to missing privileges table %d", privilegeTableID)
+		}
+		return nil
+	})
+	observeValueInReaderTenant(t, c.ReaderTenantSQL)
+	waitForPollerTimeToAdvance(t, c.ReaderTenantSQL, pollerResolvedTime)
 }
 
 // TestComputeStatsDiff is an end to end test that ensures that mvcc stats are

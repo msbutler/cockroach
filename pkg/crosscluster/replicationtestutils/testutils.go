@@ -226,9 +226,9 @@ func SetupReaderTenant(
 		TenantID:    tenantID,
 		TenantName:  roachpb.TenantName(tenantName),
 		UseDatabase: "defaultdb",
+		Knobs:       DefaultAppTenantTestingKnobs(),
 	})
 	require.NoError(t, err)
-	sysSQL.Exec(t, `ALTER TENANT $1 SET CLUSTER SETTING jobs.registry.interval.adopt = '1s'`, tenantName)
 	sysSQL.Exec(t, `ALTER TENANT $1 SET CLUSTER SETTING bulkio.stream_ingestion.standby_read_ts_poll_interval = '500ms'`, tenantName)
 
 	// Attempt to keep the reader tenant's historical aost close to the present.
