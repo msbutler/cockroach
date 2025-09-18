@@ -133,6 +133,7 @@ func SetupOrAdvanceStandbyReaderCatalog(
 			// if a table and sequence depend on each other, then updating one and
 			// fetching the other in a mutable way to remove a dependency will hit
 			// a validation error.
+			upsertingDescsWithNameCollision := catalog.DescriptorIDSet{}
 			for _, mut := range descriptorsToWrite {
 				if err := txn.Descriptors().WriteDescToBatch(ctx, true, mut, b); err != nil {
 					return errors.Wrapf(err, "unable to create replicated descriptor: %d %T", mut.GetID(), mut)
@@ -146,6 +147,8 @@ func SetupOrAdvanceStandbyReaderCatalog(
 				entry := allExistingDescs.LookupNamespaceEntry(catalog.MakeNameInfo(e))
 				if entry != nil && e.GetID() == entry.GetID() {
 					return nil
+				} else if entry != nil {
+					upsertingDescsWithNameCollision.Add(entry.GetID())
 				}
 				return errors.Wrapf(txn.Descriptors().UpsertNamespaceEntryToBatch(ctx, true, e, b), "namespace entry %v", e)
 			}); err != nil {
@@ -173,6 +176,11 @@ func SetupOrAdvanceStandbyReaderCatalog(
 						!descriptorsRenamed.Contains(e.GetID())) {
 					return nil
 				}
+				// Do not delete namespace entry if we're upserting it to a different ID.
+				if upsertingDescsWithNameCollision.Contains(e.GetID()) {
+					return nil
+				}
+
 				return errors.Wrapf(txn.Descriptors().DeleteNamespaceEntryToBatch(ctx, true, e, b),
 					"deleting namespace")
 			}); err != nil {
