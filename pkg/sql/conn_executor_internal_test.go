@@ -39,7 +39,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/util/log"
 	"github.com/cockroachdb/cockroach/pkg/util/mon"
 	"github.com/cockroachdb/cockroach/pkg/util/stop"
-	"github.com/cockroachdb/cockroach/pkg/util/timeutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -238,7 +237,7 @@ func TestPortalsDestroyedOnTxnFinish(t *testing.T) {
 func mustParseOne(s string) statements.Statement[tree.Statement] {
 	stmts, err := parser.Parse(s)
 	if err != nil {
-		log.Dev.Fatalf(context.Background(), "%v", err)
+		log.Fatalf(context.Background(), "%v", err)
 	}
 	return stmts[0]
 }
@@ -281,20 +280,19 @@ func startConnExecutor(
 	nodeID := base.TestingIDContainer
 	distSQLMetrics := execinfra.MakeDistSQLMetrics(time.Hour /* histogramWindow */)
 	gw := gossip.MakeOptionalGossip(nil)
-	tempEngine, tempFS, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), nil /* statsCollector */)
+	tempEngine, tempFS, err := storage.NewTempEngine(ctx, base.DefaultTestTempStorageConfig(st), base.DefaultTestStoreSpec)
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
 	defer tempEngine.Close()
 	ambientCtx := log.MakeTestingAmbientCtxWithNewTracer()
 	pool := mon.NewUnlimitedMonitor(ctx, mon.Options{
-		Name:     mon.MakeName("test"),
+		Name:     "test",
 		Settings: st,
 	})
 	// This pool should never be Stop()ed because, if the test is failing, memory
 	// is not properly released.
 	collectionFactory := descs.NewBareBonesCollectionFactory(st, keys.SystemSQLCodec)
-	registry := stmtdiagnostics.NewRegistry(nil, st)
 	cfg := &ExecutorConfig{
 		AmbientCtx: ambientCtx,
 		Settings:   st,
@@ -333,7 +331,6 @@ func startConnExecutor(
 			stopper,
 			func(base.SQLInstanceID) bool { return true }, // everybody is available
 			nil, /* connHealthCheckerSystem */
-			nil, /* instanceConnHealthChecker */
 			nil, /* sqlInstanceDialer */
 			keys.SystemSQLCodec,
 			nil, /* sqlAddressResolver */
@@ -341,15 +338,14 @@ func startConnExecutor(
 		),
 		QueryCache:              querycache.New(0),
 		TestingKnobs:            ExecutorTestingKnobs{},
-		StmtDiagnosticsRecorder: registry,
-		TxnDiagnosticsRecorder:  stmtdiagnostics.NewTxnRegistry(nil, st, registry, timeutil.DefaultTimeSource{}),
+		StmtDiagnosticsRecorder: stmtdiagnostics.NewRegistry(nil, st),
 		HistogramWindowInterval: base.DefaultHistogramWindowInterval(),
 		CollectionFactory:       collectionFactory,
 		LicenseEnforcer:         license.NewEnforcer(nil),
 	}
 
 	s := NewServer(cfg, pool)
-	buf := NewStmtBuf(0 /* toReserve */)
+	buf := NewStmtBuf()
 	syncResults := make(chan []*streamingCommandResult, 1)
 	resultChannel := newAsyncIEResultChannel()
 	var cc ClientComm = &internalClientComm{
@@ -402,7 +398,7 @@ func TestSessionCloseWithPendingTempTableInTxn(t *testing.T) {
 	defer s.Stopper().Stop(ctx)
 
 	srv := s.SQLServer().(*Server)
-	stmtBuf := NewStmtBuf(0 /* toReserve */)
+	stmtBuf := NewStmtBuf()
 	flushed := make(chan []*streamingCommandResult)
 	clientComm := &internalClientComm{
 		sync: func(res []*streamingCommandResult) {
