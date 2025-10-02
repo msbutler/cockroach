@@ -12,6 +12,7 @@ import (
 
 	"github.com/cockroachdb/cockroach/pkg/cmd/roachtest/spec"
 	"github.com/cockroachdb/cockroach/pkg/roachprod/vm"
+	"github.com/cockroachdb/cockroach/pkg/util/randutil"
 	"github.com/spf13/pflag"
 )
 
@@ -109,15 +110,6 @@ var (
 	_             = registerRunFlag(&CockroachPath, FlagInfo{
 		Name:  "cockroach",
 		Usage: `Absolute path to cockroach binary to use`,
-	})
-
-	CockroachStage string
-	_              = registerRunFlag(&CockroachStage, FlagInfo{
-		Name: "cockroach-stage",
-		Usage: `
-			Stage cockroach binary from cloud storage instead of uploading local binary.
-			Specify version/SHA (e.g., "latest", "v23.2.0", or commit SHA).
-			Mutually exclusive with --cockroach.`,
 	})
 
 	ConfigPath string
@@ -473,6 +465,12 @@ var (
 	_                         = registerRunFlag(&AutoKillThreshold, FlagInfo{
 		Name:  "auto-kill-threshold",
 		Usage: `Percentage of failed tests before all remaining tests are automatically terminated.`,
+	})
+
+	GlobalSeed int64 = randutil.NewPseudoSeed()
+	_                = registerRunFlag(&GlobalSeed, FlagInfo{
+		Name:  "global-seed",
+		Usage: `The global random seed used for all tests.`,
 	})
 
 	ClearClusterCache bool = true
