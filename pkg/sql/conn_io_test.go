@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/parser"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
-	"github.com/stretchr/testify/require"
 )
 
 func assertStmt(t *testing.T, cmd Command, exp string) {
@@ -67,7 +66,7 @@ func TestStmtBuf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	buf := NewStmtBuf(0 /* toReserve */)
+	buf := NewStmtBuf()
 	mustPush(ctx, t, buf, ExecStmt{Statement: s1})
 	mustPush(ctx, t, buf, ExecStmt{Statement: s2})
 	mustPush(ctx, t, buf, ExecStmt{Statement: s3})
@@ -140,7 +139,7 @@ func TestStmtBufSignal(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	buf := NewStmtBuf(0 /* toReserve */)
+	buf := NewStmtBuf()
 	s1, err := parser.ParseOne("SELECT 1")
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +164,7 @@ func TestStmtBufLtrim(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	buf := NewStmtBuf(0 /* toReserve */)
+	buf := NewStmtBuf()
 	for i := 0; i < 5; i++ {
 		stmt, err := parser.ParseOne(
 			fmt.Sprintf("SELECT %d", i))
@@ -194,7 +193,7 @@ func TestStmtBufClose(t *testing.T) {
 	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
-	buf := NewStmtBuf(0 /* toReserve */)
+	buf := NewStmtBuf()
 	stmt, err := parser.ParseOne("SELECT 1")
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +212,7 @@ func TestStmtBufCloseUnblocksReader(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	buf := NewStmtBuf(0 /* toReserve */)
+	buf := NewStmtBuf()
 
 	go func() {
 		buf.Close()
@@ -231,7 +230,7 @@ func TestStmtBufPreparedStmt(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	buf := NewStmtBuf(0 /* toReserve */)
+	buf := NewStmtBuf()
 	ctx := context.Background()
 
 	s1, err := parser.ParseOne("SELECT 1")
@@ -275,7 +274,7 @@ func TestStmtBufBatching(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)
 
-	buf := NewStmtBuf(0 /* toReserve */)
+	buf := NewStmtBuf()
 	ctx := context.Background()
 
 	s1, err := parser.ParseOne("SELECT 1")
@@ -342,53 +341,4 @@ func TestStmtBufBatching(t *testing.T) {
 	if pos != CmdPos(9) {
 		t.Fatalf("expected pos to be %d, got: %d", 9, pos)
 	}
-}
-
-func TestStmtBufEmpty(t *testing.T) {
-	defer leaktest.AfterTest(t)()
-	defer log.Scope(t).Close(t)
-
-	ctx := context.Background()
-
-	t.Run("EmptyBuffer", func(t *testing.T) {
-		buf := NewStmtBuf(0)
-		empty, err := buf.Empty()
-		require.NoError(t, err)
-		require.True(t, empty)
-	})
-
-	t.Run("NonEmptyBuffer", func(t *testing.T) {
-		buf := NewStmtBuf(0)
-		s1, err := parser.ParseOne("SELECT 1")
-		require.NoError(t, err)
-		mustPush(ctx, t, buf, ExecStmt{Statement: s1})
-
-		empty, err := buf.Empty()
-		require.NoError(t, err)
-		require.False(t, empty)
-	})
-
-	t.Run("EmptyAfterAdvancing", func(t *testing.T) {
-		buf := NewStmtBuf(0)
-		s1, err := parser.ParseOne("SELECT 1")
-		require.NoError(t, err)
-		mustPush(ctx, t, buf, ExecStmt{Statement: s1})
-
-		empty, err := buf.Empty()
-		require.NoError(t, err)
-		require.False(t, empty)
-
-		buf.AdvanceOne()
-		empty, err = buf.Empty()
-		require.NoError(t, err)
-		require.True(t, empty)
-	})
-
-	t.Run("ClosedBuffer", func(t *testing.T) {
-		buf := NewStmtBuf(0)
-		buf.Close()
-
-		_, err := buf.Empty()
-		require.Equal(t, io.EOF, err)
-	})
 }

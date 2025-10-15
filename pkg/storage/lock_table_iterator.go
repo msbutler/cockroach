@@ -14,7 +14,6 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/concurrency/lock"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/storage/enginepb"
-	"github.com/cockroachdb/cockroach/pkg/storage/fs"
 	"github.com/cockroachdb/cockroach/pkg/util/metamorphic"
 	"github.com/cockroachdb/cockroach/pkg/util/protoutil"
 	"github.com/cockroachdb/cockroach/pkg/util/uuid"
@@ -87,7 +86,7 @@ type LockTableIteratorOptions struct {
 	MatchMinStr lock.Strength
 	// ReadCategory is used to map to a user-understandable category string, for
 	// stats aggregation and metrics, and a Pebble-understandable QoS.
-	ReadCategory fs.ReadCategory
+	ReadCategory ReadCategory
 }
 
 // validate validates the LockTableIteratorOptions.
@@ -110,10 +109,9 @@ func (opts LockTableIteratorOptions) validate() error {
 // toIterOptions converts the LockTableIteratorOptions to IterOptions.
 func (opts LockTableIteratorOptions) toIterOptions() IterOptions {
 	return IterOptions{
-		Prefix:       opts.Prefix,
-		LowerBound:   opts.LowerBound,
-		UpperBound:   opts.UpperBound,
-		ReadCategory: opts.ReadCategory,
+		Prefix:     opts.Prefix,
+		LowerBound: opts.LowerBound,
+		UpperBound: opts.UpperBound,
 	}
 }
 
@@ -302,7 +300,7 @@ func (i *LockTableIterator) advanceToMatchingLock(
 					// zero UUID if we are in this branch, with the iterator positioned
 					// after the matchTxnID. Assert for good measure.
 					if i.matchTxnID == uuid.Nil {
-						panic(errors.AssertionFailedf("matchTxnID is unexpectedly the zero UUID"))
+						panic("matchTxnID is unexpectedly the zero UUID")
 					}
 					ltKey.TxnUUID = uuid.FromUint128(i.matchTxnID.ToUint128().Sub(1))
 					seekKey, *seekKeyBuf = ltKey.ToEngineKey(*seekKeyBuf)

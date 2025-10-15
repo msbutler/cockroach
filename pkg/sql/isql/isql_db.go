@@ -9,18 +9,16 @@ import (
 	"context"
 
 	"github.com/cockroachdb/cockroach/pkg/kv"
-	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/colinfo"
-	"github.com/cockroachdb/cockroach/pkg/sql/parser/statements"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
-	"github.com/cockroachdb/redact"
 )
 
 // DB enables clients to create and execute sql transactions from code inside
 // the database. Multi-statement transactions should leverage the Txn method.
 type DB interface {
+
 	// KV returns the underlying *kv.DB.
 	KV() *kv.DB
 
@@ -36,22 +34,6 @@ type DB interface {
 
 	// Executor constructs an internal executor not bound to a transaction.
 	Executor(...ExecutorOption) Executor
-
-	// Session constructs a SQL session that can be used internally. Session is
-	// distinct from Executor because it is internally stateful and allows using
-	// features like prepared statements, the query cache, explicit transactions,
-	// savepoints, temporary tables.
-	//
-	// TODO(jeffswenson): implement the isql.Executor interface using
-	// isql.Session. Then metamorphically use isql.Session as sql.InternalExecutor.
-	// The main features isql.Session is missing are:
-	// 1. The ability to be initialized as rw inside a root transaction or ro in a leaf transaction.
-	// 2. The ability to expose the underlying kv.Txn so that raw KV operations
-	//    are interleaved with SQL.
-	//
-	// TODO(jeffswenson): metamorphically use isql.Session as the execution
-	// engine for logictest.
-	Session(ctx context.Context, name string, options ...ExecutorOption) (Session, error)
 }
 
 // Txn is an internal sql transaction.
@@ -62,9 +44,6 @@ type Txn interface {
 
 	// SessionData returns the transaction's SessionData.
 	SessionData() *sessiondata.SessionData
-
-	// GetSystemSchemaVersion exposes the schema version from the system db desc.
-	GetSystemSchemaVersion(context.Context) (roachpb.Version, error)
 
 	// Executor allows the user to execute transactional SQL statements.
 	Executor
@@ -90,7 +69,7 @@ type Executor interface {
 	// Exec is deprecated because it may transparently execute a query as root.
 	// Use ExecEx instead.
 	Exec(
-		ctx context.Context, opName redact.RedactableString, txn *kv.Txn, statement string, params ...interface{},
+		ctx context.Context, opName string, txn *kv.Txn, statement string, params ...interface{},
 	) (int, error)
 
 	// ExecEx is like Exec, but allows the caller to override some session data
@@ -100,21 +79,10 @@ type Executor interface {
 	// they have previously been set through SetSessionData().
 	ExecEx(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		o sessiondata.InternalExecutorOverride,
 		stmt string,
-		qargs ...interface{},
-	) (int, error)
-
-	// ExecParsed is like Exec but allows the caller to provide an already
-	// parsed statement.
-	ExecParsed(
-		ctx context.Context,
-		opName redact.RedactableString,
-		txn *kv.Txn,
-		o sessiondata.InternalExecutorOverride,
-		parsedStmt statements.Statement[tree.Statement],
 		qargs ...interface{},
 	) (int, error)
 
@@ -123,7 +91,7 @@ type Executor interface {
 	//
 	// QueryRow is deprecated. Use QueryRowEx() instead.
 	QueryRow(
-		ctx context.Context, opName redact.RedactableString, txn *kv.Txn, statement string, qargs ...interface{},
+		ctx context.Context, opName string, txn *kv.Txn, statement string, qargs ...interface{},
 	) (tree.Datums, error)
 
 	// QueryRowEx is like QueryRow, but allows the caller to override some
@@ -133,21 +101,10 @@ type Executor interface {
 	// they have previously been set through SetSessionData().
 	QueryRowEx(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		session sessiondata.InternalExecutorOverride,
 		stmt string,
-		qargs ...interface{},
-	) (tree.Datums, error)
-
-	// QueryRowExParsed is like QueryRowEx, but allows the caller to provide an
-	// already parsed statement.
-	QueryRowExParsed(
-		ctx context.Context,
-		opName redact.RedactableString,
-		txn *kv.Txn,
-		session sessiondata.InternalExecutorOverride,
-		parsedStmt statements.Statement[tree.Statement],
 		qargs ...interface{},
 	) (tree.Datums, error)
 
@@ -155,7 +112,7 @@ type Executor interface {
 	// computed ResultColumns of the input query.
 	QueryRowExWithCols(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		session sessiondata.InternalExecutorOverride,
 		stmt string,
@@ -173,7 +130,7 @@ type Executor interface {
 	// as root. Use QueryBufferedEx instead.
 	QueryBuffered(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		stmt string,
 		qargs ...interface{},
@@ -188,7 +145,7 @@ type Executor interface {
 	// they have previously been set through SetSessionData().
 	QueryBufferedEx(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		session sessiondata.InternalExecutorOverride,
 		stmt string,
@@ -203,7 +160,7 @@ type Executor interface {
 	// as root. Use QueryIteratorEx instead.
 	QueryIterator(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		stmt string,
 		qargs ...interface{},
@@ -214,7 +171,7 @@ type Executor interface {
 	// *must* be closed.
 	QueryIteratorEx(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		session sessiondata.InternalExecutorOverride,
 		stmt string,
@@ -225,7 +182,7 @@ type Executor interface {
 	// ResultColumns of the input query.
 	QueryBufferedExWithCols(
 		ctx context.Context,
-		opName redact.RedactableString,
+		opName string,
 		txn *kv.Txn,
 		session sessiondata.InternalExecutorOverride,
 		stmt string,
