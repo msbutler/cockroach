@@ -53,7 +53,7 @@ var tryTimeout = settings.RegisterDurationSetting(
 	settings.ApplicationLevel,
 	"cloudstorage.azure.try.timeout",
 	"the timeout for individual retry attempts in Azure operations",
-	60*time.Second)
+	0)
 
 // A note on Azure authentication:
 //
