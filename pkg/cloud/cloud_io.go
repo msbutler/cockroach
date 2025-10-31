@@ -91,6 +91,8 @@ var httpMetrics = settings.RegisterBoolSetting(
 	"enabled collection of detailed metrics on cloud http requests",
 	true)
 
+var readTimeoutErr = errors.New("resuming reader timeout")
+
 // MakeHTTPClient makes an http client configured with the common settings used
 // for interacting with cloud storage (timeouts, retries, CA certs, etc).
 func MakeHTTPClient(
@@ -317,6 +319,10 @@ func (r *ResumingReader) Open(ctx context.Context) error {
 
 // Read implements ioctx.ReaderCtx.
 func (r *ResumingReader) Read(ctx context.Context, p []byte) (int, error) {
+
+	ctx, cancel := context.WithDeadlineCause(ctx, time.Now().Add(time.Minute), readTimeoutErr)
+	defer cancel()
+
 	ctx, sp := tracing.ChildSpan(ctx, "cloud.ResumingReader.Read")
 	defer sp.Finish()
 
