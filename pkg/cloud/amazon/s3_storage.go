@@ -637,6 +637,19 @@ func (s *s3Storage) newClient(ctx context.Context) (s3Client, string, error) {
 	case cloud.AuthParamImplicit:
 	}
 
+	var endpointURI string
+	if s.opts.endpoint != "" {
+		var err error
+		endpointURI, err = constructEndpointURI(s.opts.endpoint)
+		if err != nil {
+			return s3Client{}, "", err
+		}
+	}
+
+	addLoadOption(config.WithDefaultRegion(s.opts.region))
+	addLoadOption(config.WithRegion(s.opts.region))
+	addLoadOption(config.WithBaseEndpoint(endpointURI))
+
 	cfg, err := config.LoadDefaultConfig(ctx, loadOptions...)
 	if err != nil {
 		return s3Client{}, "", errors.Wrap(err, "could not initialize an aws config")
@@ -647,31 +660,14 @@ func (s *s3Storage) newClient(ctx context.Context) (s3Client, string, error) {
 		cfg.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
 	}
 
-	var endpointURI string
-	if s.opts.endpoint != "" {
-		var err error
-		endpointURI, err = constructEndpointURI(s.opts.endpoint)
-		if err != nil {
-			return s3Client{}, "", err
-		}
-	}
-
 	if s.opts.assumeRoleProvider.roleARN != "" {
 		for _, delegateProvider := range s.opts.delegateRoleProviders {
-			client := sts.NewFromConfig(cfg, func(options *sts.Options) {
-				if endpointURI != "" {
-					options.BaseEndpoint = aws.String(endpointURI)
-				}
-			})
+			client := sts.NewFromConfig(cfg)
 			intermediateCreds := stscreds.NewAssumeRoleProvider(client, delegateProvider.roleARN, withExternalID(delegateProvider.externalID))
 			cfg.Credentials = aws.NewCredentialsCache(intermediateCreds)
 		}
 
-		client := sts.NewFromConfig(cfg, func(options *sts.Options) {
-			if endpointURI != "" {
-				options.BaseEndpoint = aws.String(endpointURI)
-			}
-		})
+		client := sts.NewFromConfig(cfg)
 
 		creds := stscreds.NewAssumeRoleProvider(client, s.opts.assumeRoleProvider.roleARN, withExternalID(s.opts.assumeRoleProvider.externalID))
 		// NOTE: It's critical to wrap all credentials in a CredentialCache to
@@ -702,9 +698,6 @@ func (s *s3Storage) newClient(ctx context.Context) (s3Client, string, error) {
 	cfg.Region = region
 
 	c := s3.NewFromConfig(cfg, func(options *s3.Options) {
-		if endpointURI != "" {
-			options.BaseEndpoint = aws.String(endpointURI)
-		}
 		if s.opts.usePathStyle {
 			options.UsePathStyle = true
 		}
