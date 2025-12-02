@@ -250,7 +250,7 @@ func TestMetricsRecorderLabels(t *testing.T) {
 		},
 	}
 
-	actualData := recorder.GetTimeSeriesData(false)
+	actualData := recorder.GetTimeSeriesData()
 
 	// compare actual vs expected values
 	sort.Sort(byTimeAndName(actualData))
@@ -650,7 +650,7 @@ func TestMetricsRecorder(t *testing.T) {
 	// ========================================
 	// Verify time series data
 	// ========================================
-	actual := recorder.GetTimeSeriesData(false)
+	actual := recorder.GetTimeSeriesData()
 
 	// Actual comparison is simple: sort the resulting arrays by time and name,
 	// and use reflect.DeepEqual.
@@ -725,7 +725,7 @@ func TestMetricsRecorder(t *testing.T) {
 				t.Error(err)
 			}
 			_ = recorder.PrintAsText(io.Discard, expfmt.FmtText, false)
-			_ = recorder.GetTimeSeriesData(false)
+			_ = recorder.GetTimeSeriesData()
 			wg.Done()
 		}()
 	}
