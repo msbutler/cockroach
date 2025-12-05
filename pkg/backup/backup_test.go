@@ -11290,3 +11290,164 @@ func TestBackupRestoreDatabaseRevisionHistory(t *testing.T) {
 		checkDatabase("ephemeral", false)
 	}
 }
+
+// verifyRBRTableReplicaPlacement verifies that a REGIONAL BY ROW table has the
+// expected number of ranges with the expected replica count and leaseholder
+// distribution across nodes.
+func verifyRBRTableReplicaPlacement(
+	t *testing.T,
+	sqlDB *sqlutils.SQLRunner,
+	tableName string,
+	expectedRanges int,
+	expectedReplicasPerRange int,
+) error {
+	rows := sqlDB.Query(t, fmt.Sprintf(`
+		SELECT replicas, lease_holder
+		FROM [SHOW RANGES FROM TABLE %s WITH DETAILS]
+		ORDER BY start_key
+	`, tableName))
+	defer rows.Close()
+
+	seenLeaseholders := make(map[int]bool)
+	rangeCount := 0
+	for rows.Next() {
+		var replicasStr string
+		var leaseHolder int
+		if err := rows.Scan(&replicasStr, &leaseHolder); err != nil {
+			return err
+		}
+
+		// Count number of replicas (array format: "{1}" or "{1,2,3}")
+		numReplicas := strings.Count(replicasStr, ",") + 1
+		if replicasStr == "{}" {
+			numReplicas = 0
+		}
+		if numReplicas != expectedReplicasPerRange {
+			return errors.Newf("Expected %d replica(s) for range %d, got %d",
+				expectedReplicasPerRange, rangeCount+1, numReplicas)
+		}
+
+		seenLeaseholders[leaseHolder] = true
+		rangeCount++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	// Verify we saw the expected number of ranges
+	if rangeCount != expectedRanges {
+		return errors.Newf("Expected %d ranges, got %d", expectedRanges, rangeCount)
+	}
+	return nil
+}
+
+// TestStrictLocalityAwareBackupRegionalByRow tests that a strict locality-aware
+// backup.
+func TestStrictLocalityAwareBackup(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	// Set up a 3-node cluster with different region localities.
+	args := base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			DefaultTestTenant: base.TestDoesNotWorkWithSecondaryTenantsButWeDontKnowWhyYet(142798),
+		},
+		ServerArgsPerNode: map[int]base.TestServerArgs{
+			0: {
+				Locality: roachpb.Locality{
+					Tiers: []roachpb.Tier{{Key: "region", Value: "us-east1"}},
+				},
+			},
+			1: {
+				Locality: roachpb.Locality{
+					Tiers: []roachpb.Tier{{Key: "region", Value: "us-east2"}},
+				},
+			},
+			2: {
+				Locality: roachpb.Locality{
+					Tiers: []roachpb.Tier{{Key: "region", Value: "us-east3"}},
+				},
+			},
+		},
+	}
+
+	tc, sqlDB, _, cleanupFn := backupRestoreTestSetupWithParams(t, 3 /* nodes */, 0 /* numAccounts */, InitManualReplication, args)
+	defer cleanupFn()
+
+	// Create a multi-region database with the three regions.
+	sqlDB.Exec(t, `SET override_multi_region_zone_config = true`)
+	sqlDB.Exec(t, `CREATE DATABASE mrdb PRIMARY REGION = 'us-east1' REGIONS 'us-east2', 'us-east3'`)
+	sqlDB.Exec(t, `USE mrdb`)
+	//sqlDB.Exec(t, `ALTER DATABASE mrdb CONFIGURE ZONE USING num_replicas = 1`)
+	//sqlDB.Exec(t, `ALTER DATABASE mrdb SET `)
+
+	// Create a REGIONAL BY ROW table with replication factor 1.
+	sqlDB.Exec(t, `
+		CREATE TABLE rbr_table (
+			id INT PRIMARY KEY,
+			data TEXT
+		) LOCALITY REGIONAL BY ROW
+	`)
+	sqlDB.Exec(t, `ALTER PARTITION "us-east1" OF INDEX rbr_table@rbr_table_pkey CONFIGURE ZONE USING num_replicas = 1, num_voters = 1;`)
+	sqlDB.Exec(t, `ALTER PARTITION "us-east2" OF INDEX rbr_table@rbr_table_pkey CONFIGURE ZONE USING num_replicas = 1, num_voters = 1;`)
+	sqlDB.Exec(t, `ALTER PARTITION "us-east3" OF INDEX rbr_table@rbr_table_pkey CONFIGURE ZONE USING num_replicas = 1, num_voters = 1;`)
+
+	// Insert rows for each region.
+	sqlDB.Exec(t, `INSERT INTO rbr_table (id, crdb_region, data) VALUES (1, 'us-east1', 'data1')`)
+	sqlDB.Exec(t, `INSERT INTO rbr_table (id, crdb_region, data) VALUES (2, 'us-east2', 'data2')`)
+	sqlDB.Exec(t, `INSERT INTO rbr_table (id, crdb_region, data) VALUES (3, 'us-east3', 'data3')`)
+
+	// Wait for replication to settle.
+	require.NoError(t, tc.WaitForFullReplication())
+
+	// Verify partitioning is set up correctly.
+	var partitionCount int
+	sqlDB.QueryRow(t, `
+		SELECT count(DISTINCT partition_name)
+		FROM [SHOW PARTITIONS FROM TABLE rbr_table]
+	`).Scan(&partitionCount)
+	require.Equal(t, 3, partitionCount, "Expected 3 partitions")
+
+	// Verify that the RBR table has 3 ranges, each with 1 replica and a different leaseholder.
+	// Use a retry loop since replica placement may take time to settle.
+	testutils.SucceedsSoon(t, func() error {
+		return verifyRBRTableReplicaPlacement(t, sqlDB, "rbr_table", 3, 1)
+	})
+
+	// Create locality-aware backup URIs with STRICT option.
+	backupURIs := []string{
+		"nodelocal://1/rbr-backup-1?COCKROACH_LOCALITY=default",
+		fmt.Sprintf("nodelocal://1/rbr-backup-1?COCKROACH_LOCALITY=%s", url.QueryEscape("region=us-east1")),
+		fmt.Sprintf("nodelocal://1/rbr-backup-2?COCKROACH_LOCALITY=%s", url.QueryEscape("region=us-east2")),
+		fmt.Sprintf("nodelocal://1/rbr-backup-3?COCKROACH_LOCALITY=%s", url.QueryEscape("region=us-east3")),
+	}
+
+	// Run a STRICT locality-aware backup.
+	backupQuery := fmt.Sprintf(
+		"BACKUP DATABASE mrdb INTO (%q, %q, %q, %q) WITH STRICT",
+		backupURIs[0], backupURIs[1], backupURIs[2], backupURIs[3],
+	)
+	sqlDB.Exec(t, backupQuery)
+
+	// Removing a locality should fail the backup
+	sqlDB.ExpectErr(t, "fail", fmt.Sprintf(
+		"BACKUP DATABASE mrdb INTO (%q, %q, %q) WITH STRICT",
+		backupURIs[0], backupURIs[2], backupURIs[3],
+	))
+
+	// Verify the backup succeeded by checking that we can restore from it.
+	sqlDB.Exec(t, `DROP DATABASE mrdb CASCADE`)
+	restoreQuery := fmt.Sprintf(
+		"RESTORE DATABASE mrdb FROM LATEST IN (%s, %s, %s)",
+		"$1", "$2", "$3",
+	)
+	sqlDB.Exec(t, restoreQuery, backupURIs[0], backupURIs[1], backupURIs[2])
+
+	// Verify each region's data.
+	regions := []string{"us-east1", "us-east2", "us-east3"}
+	for i, region := range regions {
+		var data string
+		sqlDB.QueryRow(t, `SELECT data FROM mrdb.rbr_table WHERE region = $1`, region).Scan(&data)
+		require.Equal(t, fmt.Sprintf("data%d", i+1), data, "Data mismatch for region %s", region)
+	}
+}
