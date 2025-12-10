@@ -102,6 +102,13 @@ var (
 		settings.WithVisibility(settings.Reserved),
 		settings.PositiveDuration,
 	)
+
+	restoreWaitForConformance = settings.RegisterBoolSetting(
+		settings.ApplicationLevel,
+		"restore.wait_for_span_config_conformance.enabled",
+		"if enabled, RESTORE will ensure span config conformance before ingestion",
+		false,
+	)
 )
 
 const (
@@ -2083,6 +2090,24 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 		resTotal.Add(res)
 		log.Dev.Infof(ctx, "finished restoring the validate data bundle")
 	}
+
+	_, sqlInstanceIDs, err := p.DistSQLPlanner().SetupAllNodesPlanning(ctx, p.ExtendedEvalContext(), p.ExecCfg())
+	if err != nil {
+		return err
+	}
+	numNodes := len(sqlInstanceIDs)
+	if numNodes == 0 {
+		numNodes = 1
+	}
+	// Wait for span config conformance before restoring the main data bundle.
+	rekeyedSpans, err := mainData.getRekeyedSpans(r.execCfg.Codec)
+	if err != nil {
+		return err
+	}
+	if err := r.MaybeWaitForSpanConfigConformance(ctx, p.ExecCfg(), rekeyedSpans, numNodes); err != nil {
+		return err
+	}
+
 	{
 		// Restore the main data bundle. We notably only restore the system tables
 		// later.
@@ -2224,18 +2249,6 @@ func (r *restoreResumer) doResume(ctx context.Context, execCtx interface{}) erro
 	// Emit an event now that the restore job has completed.
 	emitRestoreJobEvent(ctx, p, jobs.StateSucceeded, r.job)
 
-	// Restore used all available SQL instances.
-	_, sqlInstanceIDs, err := p.DistSQLPlanner().SetupAllNodesPlanning(ctx, p.ExtendedEvalContext(), p.ExecCfg())
-	if err != nil {
-		return err
-	}
-	numNodes := len(sqlInstanceIDs)
-	if numNodes == 0 {
-		// This shouldn't ever happen, but we know that we have at least one
-		// instance (which is running this code right now).
-		numNodes = 1
-	}
-
 	// Collect telemetry.
 	{
 		telemetry.Count("restore.total.succeeded")
@@ -2353,6 +2366,65 @@ func (r *restoreResumer) notifyStatsRefresherOfNewTables(ctx context.Context) {
 		desc := tabledesc.NewBuilder(details.TableDescs[i]).BuildImmutableTable()
 		r.execCfg.StatsRefresher.NotifyMutation(ctx, desc, math.MaxInt32 /* rowsAffected */)
 	}
+}
+
+// MaybeWaitForSpanConfigConformance waits for the given spans to conform to their
+// span configs by repeatedly calling SpanConfigConformance in a retry loop.
+// It returns an error if the spans do not become conformant within the retry
+// duration or if an error occurs during the conformance check.
+func (r *restoreResumer) MaybeWaitForSpanConfigConformance(
+	ctx context.Context, execCfg *sql.ExecutorConfig, spans []roachpb.Span, numNodes int,
+) error {
+
+	log.Dev.Infof(ctx, "checking span config conformance")
+
+	retryOpts := retry.Options{
+		InitialBackoff: 500 * time.Millisecond,
+		MaxBackoff:     5 * time.Second,
+		Multiplier:     2,
+		MaxRetries:     100,
+	}
+
+	testingKnobs := execCfg.BackupRestoreTestingKnobs
+
+	if testingKnobs != nil && testingKnobs.RestoreSpanConfigConformanceRetryPolicy != nil {
+		retryOpts = *testingKnobs.RestoreSpanConfigConformanceRetryPolicy
+	}
+
+	// TODO(msbutler): before polling for comforance (i.e. replicas match span
+	// configs), I need to poll that the span config reconcilation job has
+	// checkpointed up to now.
+
+	expectUnderReplication := numNodes < 3
+	var lastReport roachpb.SpanConfigConformanceReport
+	for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
+
+		if !restoreWaitForConformance.Get(&execCfg.Settings.SV) {
+			log.Dev.Infof(ctx, "skipping span config conformance check")
+			return nil
+		}
+
+		report, err := execCfg.SpanConfigReporter.SpanConfigConformance(ctx, spans)
+		if err != nil {
+			return errors.Wrap(err, "checking span config conformance")
+		}
+
+		lastReport = report
+
+		if len(report.Unavailable) == 0 &&
+			len(report.OverReplicated) == 0 &&
+			len(report.ViolatingConstraints) == 0 &&
+			(expectUnderReplication || len(report.UnderReplicated) == 0) {
+			return nil
+		}
+
+		log.Dev.Infof(ctx, "waiting for span config conformance: unavailable=%d, under-replicated=%d, over-replicated=%d, violating-constraints=%d",
+			len(report.Unavailable), len(report.UnderReplicated), len(report.OverReplicated), len(report.ViolatingConstraints))
+	}
+
+	// If we've exhausted retries, return an error with the last report details.
+	return errors.Errorf("spans did not become conformant: unavailable=%d, under-replicated=%d, over-replicated=%d, violating-constraints=%d",
+		len(lastReport.Unavailable), len(lastReport.UnderReplicated), len(lastReport.OverReplicated), len(lastReport.ViolatingConstraints))
 }
 
 // tempSystemDatabaseID returns the ID of the descriptor for the temporary

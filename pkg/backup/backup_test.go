@@ -193,8 +193,10 @@ func TestBackupRestoreSingleNodeLocal(t *testing.T) {
 	}
 	params.ServerArgs.Knobs = knobs
 
-	tc, _, _, cleanupFn := backupRestoreTestSetupWithParams(t, singleNode, numAccounts, InitManualReplication, params)
+	tc, sqlDB, _, cleanupFn := backupRestoreTestSetupWithParams(t, singleNode, numAccounts, NoInitManipulation, params)
 	defer cleanupFn()
+
+	sqlDB.Exec(t, `SET CLUSTER SETTING restore.wait_for_span_config_conformance.enabled = true`)
 
 	backupAndRestore(ctx, t, tc, []string{localFoo}, []string{localFoo}, numAccounts, nil)
 
@@ -208,8 +210,10 @@ func TestBackupRestoreMultiNodeLocal(t *testing.T) {
 
 	const numAccounts = 1000
 	ctx := context.Background()
-	tc, _, _, cleanupFn := backupRestoreTestSetup(t, multiNode, numAccounts, InitManualReplication)
+	tc, sqlDB, _, cleanupFn := backupRestoreTestSetup(t, multiNode, numAccounts, NoInitManipulation)
 	defer cleanupFn()
+
+	sqlDB.Exec(t, `SET CLUSTER SETTING restore.wait_for_span_config_conformance.enabled = true`)
 
 	backupAndRestore(ctx, t, tc, []string{localFoo}, []string{localFoo}, numAccounts, nil)
 }
@@ -11302,15 +11306,29 @@ func TestStrictLocalityAwareBackup(t *testing.T) {
 
 	ctx := context.Background()
 
+	knobs := base.TestingKnobs{
+		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+		BackupRestore: &sql.BackupRestoreTestingKnobs{
+			RestoreSpanConfigConformanceRetryPolicy: &retry.Options{
+				InitialBackoff: time.Microsecond,
+				Multiplier:     2,
+				MaxBackoff:     2 * time.Microsecond,
+				MaxDuration:    time.Second,
+			},
+		}}
+
 	args := base.TestClusterArgs{
 		ServerArgs: base.TestServerArgs{
+			// Increases allocator queue frequency.
+			ScanMaxIdleTime: 10 * time.Millisecond,
 			// The range scanner validation requires the system tenant.
 			DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+			Knobs:             knobs,
 		},
 		ServerArgsPerNode: map[int]base.TestServerArgs{
-			0: {Locality: localityFromStr(t, "region=east1")},
-			1: {Locality: localityFromStr(t, "region=east2")},
-			2: {Locality: localityFromStr(t, "region=east3")},
+			0: {Locality: localityFromStr(t, "region=east1"), Knobs: knobs},
+			1: {Locality: localityFromStr(t, "region=east2"), Knobs: knobs},
+			2: {Locality: localityFromStr(t, "region=east3"), Knobs: knobs},
 		}}
 
 	tc, sqlDB, _, cleanupFn := backupRestoreTestSetupWithParams(t, 3, 0 /* numAccounts */, func(tc *testcluster.TestCluster) {}, args)
@@ -11394,5 +11412,97 @@ func TestStrictLocalityAwareBackup(t *testing.T) {
 	sqlDB.Exec(t, fmt.Sprintf(
 		"BACKUP DATABASE test INTO (%q,%q)",
 		backupURIs[0], backupURIs[1],
+	))
+
+	sqlDB.Exec(t, `SET CLUSTER SETTING restore.wait_for_span_config_conformance.enabled = true`)
+
+	sqlDB.Exec(t, fmt.Sprintf(
+		"RESTORE DATABASE test FROM LATEST IN (%q,%q) with new_db_name = test_restored",
+		backupURIs[0], backupURIs[1],
+	))
+
+	restoredTableDesc := desctestutils.TestingGetPublicTableDescriptor(
+		srv.DB(), codec, "test_restored", "x")
+
+	require.NoError(t, checkLocalities(restoredTableDesc.PrimaryIndexSpan(codec), rangedesc.NewScanner(srv.DB()))())
+}
+
+func TestRestoreConformanceFailure(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	skip.UnderDuress(t, "takes too long under duress")
+
+	knobs := base.TestingKnobs{
+		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+		BackupRestore: &sql.BackupRestoreTestingKnobs{
+			RestoreSpanConfigConformanceRetryPolicy: &retry.Options{
+				InitialBackoff: time.Microsecond,
+				Multiplier:     2,
+				MaxBackoff:     2 * time.Microsecond,
+				MaxRetries:     5,
+			},
+		}}
+
+	args := base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+			// Increases allocator queue frequency.
+			ScanMaxIdleTime: 10 * time.Millisecond,
+			Knobs:           knobs,
+		},
+		ServerArgsPerNode: map[int]base.TestServerArgs{
+			0: {Locality: localityFromStr(t, "region=east1"), Knobs: knobs},
+			1: {Locality: localityFromStr(t, "region=east2"), Knobs: knobs},
+			2: {Locality: localityFromStr(t, "region=east3"), Knobs: knobs},
+		}}
+
+	tc, sqlDB, _, cleanupFn := backupRestoreTestSetupWithParams(t, 3, 0 /* numAccounts */, InitManualReplication, args)
+	defer cleanupFn()
+
+	sqlDB.Exec(t, `SET CLUSTER SETTING spanconfig.reconciliation_job.checkpoint_interval = '100ms'`)
+
+	sqlDB.Exec(t, `SET CLUSTER SETTING restore.wait_for_span_config_conformance.enabled = true`)
+	sqlDB.Exec(t, `ALTER RANGE default CONFIGURE ZONE USING num_replicas = 5;`)
+
+	// Wait for the span config reconciliation job to process the zone config change
+	// by polling until its checkpoint exceeds the current time.
+	now := tc.Server(0).Clock().Now()
+	ctx := context.Background()
+	registry := tc.Server(0).JobRegistry().(*jobs.Registry)
+	testutils.SucceedsSoon(t, func() error {
+		var spanConfigJobID jobspb.JobID
+		if err := sqlDB.DB.QueryRowContext(ctx,
+			`SELECT id FROM system.jobs WHERE job_type = 'AUTO SPAN CONFIG RECONCILIATION'`,
+		).Scan(&spanConfigJobID); err != nil {
+			return err
+		}
+		spanConfigJob, err := registry.LoadJob(ctx, spanConfigJobID)
+		if err != nil {
+			return err
+		}
+		spanConfigProg := spanConfigJob.Progress().
+			Details.(*jobspb.Progress_AutoSpanConfigReconciliation).
+			AutoSpanConfigReconciliation
+
+		if spanConfigProg.Checkpoint.Less(now) {
+			return fmt.Errorf(
+				"waiting for span config reconciliation job to checkpoint past %v, at %v",
+				now, spanConfigProg.Checkpoint,
+			)
+		}
+		return nil
+	})
+
+	sqlDB.Exec(t, "CREATE DATABASE test")
+	sqlDB.Exec(t, "CREATE TABLE test.x (id INT PRIMARY KEY, n INT)")
+	sqlDB.Exec(t, "INSERT INTO test.x VALUES (1, 1)")
+
+	backupURI := "nodelocal://1/restore_conformance_failure"
+	sqlDB.Exec(t, "BACKUP DATABASE test INTO $1", backupURI)
+
+	sqlDB.ExpectErr(t, "spans did not become conformant", fmt.Sprintf(
+		"RESTORE DATABASE test FROM LATEST IN %q with new_db_name = test_restored",
+		backupURI,
 	))
 }
