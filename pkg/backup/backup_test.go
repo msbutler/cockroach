@@ -11437,10 +11437,9 @@ func TestRestoreConformanceFailure(t *testing.T) {
 		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
 		BackupRestore: &sql.BackupRestoreTestingKnobs{
 			RestoreSpanConfigConformanceRetryPolicy: &retry.Options{
-				InitialBackoff: time.Microsecond,
+				InitialBackoff: time.Millisecond,
 				Multiplier:     2,
-				MaxBackoff:     2 * time.Microsecond,
-				MaxRetries:     5,
+				MaxDuration:    2 * time.Second,
 			},
 		}}
 
@@ -11457,7 +11456,7 @@ func TestRestoreConformanceFailure(t *testing.T) {
 			2: {Locality: localityFromStr(t, "region=east3"), Knobs: knobs},
 		}}
 
-	tc, sqlDB, _, cleanupFn := backupRestoreTestSetupWithParams(t, 3, 0 /* numAccounts */, InitManualReplication, args)
+	_, sqlDB, _, cleanupFn := backupRestoreTestSetupWithParams(t, 3, 0 /* numAccounts */, InitManualReplication, args)
 	defer cleanupFn()
 
 	sqlDB.Exec(t, `SET CLUSTER SETTING spanconfig.reconciliation_job.checkpoint_interval = '100ms'`)
@@ -11465,41 +11464,16 @@ func TestRestoreConformanceFailure(t *testing.T) {
 	sqlDB.Exec(t, `SET CLUSTER SETTING restore.wait_for_span_config_conformance.enabled = true`)
 	sqlDB.Exec(t, `ALTER RANGE default CONFIGURE ZONE USING num_replicas = 5;`)
 
-	// Wait for the span config reconciliation job to process the zone config change
-	// by polling until its checkpoint exceeds the current time.
-	now := tc.Server(0).Clock().Now()
-	ctx := context.Background()
-	registry := tc.Server(0).JobRegistry().(*jobs.Registry)
-	testutils.SucceedsSoon(t, func() error {
-		var spanConfigJobID jobspb.JobID
-		if err := sqlDB.DB.QueryRowContext(ctx,
-			`SELECT id FROM system.jobs WHERE job_type = 'AUTO SPAN CONFIG RECONCILIATION'`,
-		).Scan(&spanConfigJobID); err != nil {
-			return err
-		}
-		spanConfigJob, err := registry.LoadJob(ctx, spanConfigJobID)
-		if err != nil {
-			return err
-		}
-		spanConfigProg := spanConfigJob.Progress().
-			Details.(*jobspb.Progress_AutoSpanConfigReconciliation).
-			AutoSpanConfigReconciliation
-
-		if spanConfigProg.Checkpoint.Less(now) {
-			return fmt.Errorf(
-				"waiting for span config reconciliation job to checkpoint past %v, at %v",
-				now, spanConfigProg.Checkpoint,
-			)
-		}
-		return nil
-	})
-
 	sqlDB.Exec(t, "CREATE DATABASE test")
 	sqlDB.Exec(t, "CREATE TABLE test.x (id INT PRIMARY KEY, n INT)")
 	sqlDB.Exec(t, "INSERT INTO test.x VALUES (1, 1)")
 
 	backupURI := "nodelocal://1/restore_conformance_failure"
 	sqlDB.Exec(t, "BACKUP DATABASE test INTO $1", backupURI)
+
+	// Wait for the span config reconciliation job to process the zone config change
+	// by polling until its checkpoint exceeds the current time.
+	sqlutils.WaitForSpanConfigReconciliation(t, sqlDB)
 
 	sqlDB.ExpectErr(t, "spans did not become conformant", fmt.Sprintf(
 		"RESTORE DATABASE test FROM LATEST IN %q with new_db_name = test_restored",

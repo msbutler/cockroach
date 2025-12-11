@@ -61,6 +61,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catconstants"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/catid"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
+	"github.com/cockroachdb/cockroach/pkg/sql/sessiondata"
 	"github.com/cockroachdb/cockroach/pkg/sql/sqlclustersettings"
 	"github.com/cockroachdb/cockroach/pkg/sql/stats"
 	"github.com/cockroachdb/cockroach/pkg/util"
@@ -2368,6 +2369,45 @@ func (r *restoreResumer) notifyStatsRefresherOfNewTables(ctx context.Context) {
 	}
 }
 
+// waitForSpanConfigReconciliationCheckpoint waits for the span config reconciliation
+// job to checkpoint past the given timestamp by polling system.job_progress.
+func waitForSpanConfigReconciliationCheckpoint(
+	ctx context.Context,
+	execCfg *sql.ExecutorConfig,
+	targetTimestamp hlc.Timestamp,
+	retryOpts retry.Options,
+) error {
+	log.Dev.Infof(ctx, "waiting for span config reconciliation job to checkpoint past %s", targetTimestamp)
+
+	for r := retry.StartWithCtx(ctx, retryOpts); r.Next(); {
+
+		if !restoreWaitForConformance.Get(&execCfg.Settings.SV) {
+			log.Dev.Infof(ctx, "skipping span config conformance check")
+			return nil
+		}
+
+		var checkpoint hlc.Timestamp
+		checkQuery := `SELECT high_water_timestamp FROM crdb_internal.jobs WHERE job_type = 'AUTO SPAN CONFIG RECONCILIATION' and status = 'running'`
+		row, err := execCfg.InternalDB.Executor().QueryRowEx(ctx, "wait-for-span-config-progress", nil, sessiondata.NodeUserSessionDataOverride, checkQuery)
+		if err != nil {
+			return err
+		}
+		resolved, ok := row[0].(*tree.DDecimal)
+		if !ok {
+			return errors.AssertionFailedf("expected resolved to be DDecimal (was %T)", row[0])
+		}
+		checkpoint, err = hlc.DecimalToHLC(&resolved.Decimal)
+		if err != nil {
+			return errors.Wrap(err, "converting resolved timestamp")
+		}
+		if checkpoint.After(targetTimestamp) {
+			log.Dev.Infof(ctx, "span config reconciliation job checkpointed past %s (at %s)", targetTimestamp, checkpoint)
+			return nil
+		}
+	}
+	return errors.New("span config reconciliation job did not checkpoint past target timestamp")
+}
+
 // MaybeWaitForSpanConfigConformance waits for the given spans to conform to their
 // span configs by repeatedly calling SpanConfigConformance in a retry loop.
 // It returns an error if the spans do not become conformant within the retry
@@ -2391,9 +2431,14 @@ func (r *restoreResumer) MaybeWaitForSpanConfigConformance(
 		retryOpts = *testingKnobs.RestoreSpanConfigConformanceRetryPolicy
 	}
 
-	// TODO(msbutler): before polling for comforance (i.e. replicas match span
-	// configs), I need to poll that the span config reconcilation job has
-	// checkpointed up to now.
+	// Before polling for span config conformance (i.e. replicas match span
+	// configs), wait for the span config reconciliation job to checkpoint past
+	// the current time to ensure the span config table is synced with zone
+	// configs.
+	targetTimestamp := execCfg.Clock.Now()
+	if err := waitForSpanConfigReconciliationCheckpoint(ctx, execCfg, targetTimestamp, retryOpts); err != nil {
+		return errors.Wrap(err, "waiting for span config reconciliation checkpoint")
+	}
 
 	expectUnderReplication := numNodes < 3
 	var lastReport roachpb.SpanConfigConformanceReport
