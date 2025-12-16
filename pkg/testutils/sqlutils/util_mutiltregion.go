@@ -26,4 +26,6 @@ func WaitForSpanConfigReconciliation(t Fataler, tdb *SQLRunner) {
 SELECT checkpoint > extract(epoch from after)
   FROM checkpoint, after`,
 		[][]string{{"true"}})
+
+	tdb.Exec(t, `DROP TABLE after`)
 }

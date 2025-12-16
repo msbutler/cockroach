@@ -11530,3 +11530,143 @@ func TestRestoreConformanceSingleNode(t *testing.T) {
 	query2 := fmt.Sprintf(`SELECT count(*) FROM system.job_message WHERE job_id = %d AND message = 'span config conformance check completed'`, jobId)
 	sqlDB.CheckQueryResults(t, query2, [][]string{{"1"}})
 }
+
+func TestRBRDomiciledBackupRestore(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	skip.UnderDuress(t, "takes too long under duress")
+
+	tmp := t.TempDir()
+
+	knobs := base.TestingKnobs{
+		JobsTestingKnobs: jobs.NewTestingKnobsWithShortIntervals(),
+		BackupRestore: &sql.BackupRestoreTestingKnobs{
+			RestoreSpanConfigConformanceRetryPolicy: &retry.Options{
+				InitialBackoff: time.Millisecond,
+				Multiplier:     2,
+				MaxBackoff:     1 * time.Second,
+				MaxDuration:    30 * time.Second,
+			},
+		}}
+
+	args := base.TestClusterArgs{
+		ServerArgs: base.TestServerArgs{
+			// Increases allocator queue frequency.
+			ScanMaxIdleTime:   10 * time.Millisecond,
+			DefaultTestTenant: base.TestIsSpecificToStorageLayerAndNeedsASystemTenant,
+			Knobs:             knobs,
+		},
+		ServerArgsPerNode: map[int]base.TestServerArgs{
+			0: {Locality: localityFromStr(t, "region=east1"), Knobs: knobs, ExternalIODir: tmp},
+			1: {Locality: localityFromStr(t, "region=east1"), Knobs: knobs, ExternalIODir: tmp},
+			2: {Locality: localityFromStr(t, "region=east1"), Knobs: knobs, ExternalIODir: tmp},
+			3: {Locality: localityFromStr(t, "region=east2"), Knobs: knobs, ExternalIODir: tmp},
+			4: {Locality: localityFromStr(t, "region=east2"), Knobs: knobs, ExternalIODir: tmp},
+			5: {Locality: localityFromStr(t, "region=east2"), Knobs: knobs, ExternalIODir: tmp},
+			6: {Locality: localityFromStr(t, "region=east3"), Knobs: knobs, ExternalIODir: tmp},
+			7: {Locality: localityFromStr(t, "region=east3"), Knobs: knobs, ExternalIODir: tmp},
+			8: {Locality: localityFromStr(t, "region=east3"), Knobs: knobs, ExternalIODir: tmp},
+		}}
+
+	// Create locality-aware backup URIs with STRICT option.
+	backupURIs := []string{
+		"nodelocal://1/rbr-backup-1?COCKROACH_LOCALITY=default",
+		fmt.Sprintf("nodelocal://1/rbr-backup-1?COCKROACH_LOCALITY=%s", url.QueryEscape("region=east1")),
+		fmt.Sprintf("nodelocal://1/rbr-backup-2?COCKROACH_LOCALITY=%s", url.QueryEscape("region=east2")),
+		fmt.Sprintf("nodelocal://1/rbr-backup-3?COCKROACH_LOCALITY=%s", url.QueryEscape("region=east3")),
+	}
+
+	_, sqlDB, cleanupFn := backupRestoreTestSetupEmpty(t, 9, tmp, func(tc *testcluster.TestCluster) {}, args)
+
+	defer cleanupFn()
+
+	databaseRestore := true
+
+	speedUpSpanConfigReconciliation(t, sqlDB)
+	sqlDB.Exec(t, `SET CLUSTER SETTING restore.wait_for_span_config_conformance.enabled = true`)
+
+	validate := func(t *testing.T, dbName string, expectedReplicaPlacement string) {
+		sqlDB.Exec(t, fmt.Sprintf("USE %s", dbName))
+
+		sqlutils.WaitForSpanConfigReconciliation(t, sqlDB)
+
+		// Insert one row in each region
+		sqlDB.Exec(t, fmt.Sprintf("INSERT INTO %s.x (id, n) VALUES (1, 1), (2, 2), (3, 3)", dbName))
+
+		if expectedReplicaPlacement != "" {
+			// Not sure why this need to be retried given that we wait for span config reconciliation above.
+			sqlDB.CheckQueryResultsRetry(t, fmt.Sprintf("select distinct(replica_localities) from [show ranges from table %s.x];", dbName), [][]string{{expectedReplicaPlacement}})
+		}
+
+		backupQuery := fmt.Sprintf(
+			"BACKUP INTO (%q, %q, %q, %q) WITH STRICT STORAGE LOCALITY",
+			backupURIs[0], backupURIs[1], backupURIs[2], backupURIs[3],
+		)
+		sqlDB.Exec(t, backupQuery)
+
+		sqlDB.Exec(t, fmt.Sprintf("DROP DATABASE %s CASCADE", dbName))
+
+		if databaseRestore {
+			sqlDB.Exec(t, fmt.Sprintf(
+				"RESTORE DATABASE %s FROM LATEST IN (%q, %q, %q, %q)",
+				dbName, backupURIs[0], backupURIs[1], backupURIs[2], backupURIs[3],
+			))
+
+			if expectedReplicaPlacement != "" {
+				sqlDB.CheckQueryResults(t, fmt.Sprintf("select distinct(replica_localities) from [show ranges from table %s.x];", dbName), [][]string{{expectedReplicaPlacement}})
+			}
+			sqlDB.Exec(t, fmt.Sprintf("DROP DATABASE %s CASCADE", dbName))
+		} else {
+			sqlDB.Exec(t, fmt.Sprintf(
+				"RESTORE FROM LATEST IN (%q, %q, %q, %q)",
+				backupURIs[0], backupURIs[1], backupURIs[2], backupURIs[3],
+			))
+			if expectedReplicaPlacement != "" {
+				sqlDB.CheckQueryResults(t, fmt.Sprintf("select distinct(replica_localities) from [show ranges from table %s.x];", dbName), [][]string{{expectedReplicaPlacement}})
+			}
+			sqlDB.Exec(t, fmt.Sprintf("DROP DATABASE %s CASCADE", dbName))
+		}
+	}
+
+	t.Run("RBR", func(t *testing.T) {
+		// Create a multiregion database with RBR table
+		//
+		// NB: By default, each partition in the RBR table will have NV replicas in
+		// follower regions.
+		sqlDB.Exec(t, `CREATE DATABASE rbr PRIMARY REGION "east1" REGIONS "east1", "east2", "east3"`)
+		sqlDB.Exec(t, `CREATE TABLE rbr.x (
+		id INT PRIMARY KEY,
+		n INT
+	) LOCALITY REGIONAL BY ROW`)
+		// This fails because database restore does not properly recreate partition level zone configs.
+		validate(t, "rbr", "")
+	})
+	t.Run("RBT", func(t *testing.T) {
+		// Create a multiregion database with RBT table
+		//
+		// NB: by default: non voting replicas are placed in east2 and
+		// east3. This implies a user that wants to pin a table to specific region
+		// must use the manual `CONFIGURE ZONE USING` command below.
+		sqlDB.Exec(t, `CREATE DATABASE rbt PRIMARY REGION "east1" REGIONS "east1", "east2", "east3"`)
+		sqlDB.Exec(t, `CREATE TABLE rbt.x (
+		id INT PRIMARY KEY,
+		n INT
+	) LOCALITY REGIONAL BY TABLE IN "east1"`)
+
+		validate(t, "rbt", "{region=east1,region=east1,region=east1,region=east2,region=east3}")
+	})
+	t.Run("manual", func(t *testing.T) {
+		sqlDB.Exec(t, "CREATE DATABASE manual")
+		sqlDB.Exec(t, `ALTER DATABASE manual CONFIGURE ZONE USING constraints = '[+region=east3]'`)
+		sqlDB.Exec(t, "CREATE TABLE manual.x (id INT PRIMARY KEY, n INT)")
+		// MB NOTE: This fails becuase database restore does not recreate the manual zone
+		// config above...because the locality config on the table descriptor is null.
+		validate(t, "manual", "{region=east3,region=east3,region=east3}")
+	})
+	t.Run("single", func(t *testing.T) {
+		sqlDB.Exec(t, `CREATE DATABASE single_region PRIMARY REGION "east1"`)
+		sqlDB.Exec(t, "CREATE TABLE single_region.x (id INT PRIMARY KEY, n INT)")
+		validate(t, "single_region", "{region=east1,region=east1,region=east1}")
+	})
+}

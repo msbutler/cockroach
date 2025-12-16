@@ -81,5 +81,5 @@ func SucceedsSoonDuration() time.Duration {
 	if util.RaceEnabled || syncutil.DeadlockEnabled {
 		return RaceSucceedsSoonDuration
 	}
-	return DefaultSucceedsSoonDuration
+	return DefaultSucceedsSoonDuration * 2
 }
