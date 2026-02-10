@@ -364,6 +364,34 @@ func (tfi TestFailureIssue) String() string {
 	}
 }
 
+// oldStyleTitle generates a title without branch prefix.
+// Used during transition to find issues created before the migration.
+func oldStyleTitle(packageNameShort, testName string) string {
+	return fmt.Sprintf("%s: %s failed", packageNameShort, testName)
+}
+
+// combineAndDeduplicateIssues merges issue slices, removing duplicates by number.
+func combineAndDeduplicateIssues(issues1, issues2 []github.Issue) []github.Issue {
+	seen := make(map[int]bool)
+	var result []github.Issue
+
+	for _, issue := range issues1 {
+		if issue.Number != nil && !seen[*issue.Number] {
+			result = append(result, issue)
+			seen[*issue.Number] = true
+		}
+	}
+
+	for _, issue := range issues2 {
+		if issue.Number != nil && !seen[*issue.Number] {
+			result = append(result, issue)
+			seen[*issue.Number] = true
+		}
+	}
+
+	return result
+}
+
 func (p *poster) post(
 	origCtx context.Context, formatter IssueFormatter, req PostRequest,
 ) (*TestFailureIssue, error) {
@@ -374,39 +402,40 @@ func (p *poster) post(
 		nil, // relatedIssues
 	)
 
-	// We just want the title this time around, as we're going to use
-	// it to figure out if an issue already exists.
-	title := formatter.Title(data)
+	// Generate new-format title with branch prefix
+	newTitle := formatter.Title(data)
 
-	// We carry out two searches below, one attempting to find an issue that we
-	// adopt (i.e. add a comment to) and one finding "related issues", i.e. those
-	// that would match if it weren't for their branch label.
-	qExisting, qRelated := buildIssueQueries(p.Repo, p.Org, p.Branch, title, req)
+	// Generate old-format title for backwards compatibility during transition
+	oldTitle := oldStyleTitle(data.PackageNameShort, data.TestName)
 
+	// Search for new-format title first
+	qExisting, qRelated := buildIssueQueries(p.Repo, p.Org, p.Branch, newTitle, req)
 	rExisting, _, err := p.searchIssues(ctx, qExisting, &github.SearchOptions{
-		ListOptions: github.ListOptions{
-			PerPage: 10,
-		},
+		ListOptions: github.ListOptions{PerPage: 10},
 	})
 	if err != nil {
-		// Tough luck, keep going even if that means we're going to add a duplicate
-		// issue.
 		p.l.Printf("error trying to find existing GitHub issues: %v", err)
 		rExisting = &github.IssuesSearchResult{}
 	}
 
-	rRelated, _, err := p.searchIssues(ctx, qRelated, &github.SearchOptions{
-		ListOptions: github.ListOptions{
-			PerPage: 10,
-		},
-	})
-	if err != nil {
-		// This is no reason to throw the towel, keep going.
-		p.l.Printf("error trying to find related GitHub issues: %v", err)
-		rRelated = &github.IssuesSearchResult{}
+	existingIssues := filterByPrefixTitleMatch(rExisting, newTitle)
+
+	// Fallback: search for old-format title if no new-format issues found.
+	// This handles the transition period where old issues still exist.
+	// The branch label constraint in buildIssueQueries ensures we only
+	// adopt issues from the same branch, preventing cross-branch duplicates.
+	if len(existingIssues) == 0 {
+		qExistingOld, _ := buildIssueQueries(p.Repo, p.Org, p.Branch, oldTitle, req)
+		rExistingOld, _, err := p.searchIssues(ctx, qExistingOld, &github.SearchOptions{
+			ListOptions: github.ListOptions{PerPage: 10},
+		})
+		if err != nil {
+			p.l.Printf("error trying to find existing GitHub issues (old format): %v", err)
+		} else {
+			existingIssues = filterByPrefixTitleMatch(rExistingOld, oldTitle)
+		}
 	}
 
-	existingIssues := filterByPrefixTitleMatch(rExisting, title)
 	var foundIssue *int
 	if len(existingIssues) > 0 {
 		// We found an existing issue to post a comment into.
@@ -417,7 +446,31 @@ func (p *poster) post(
 		data.MentionOnCreate = nil
 	}
 
-	data.RelatedIssues = filterByPrefixTitleMatch(rRelated, title)
+	// Search for related issues (other branches) in both formats
+	rRelated, _, err := p.searchIssues(ctx, qRelated, &github.SearchOptions{
+		ListOptions: github.ListOptions{PerPage: 10},
+	})
+	if err != nil {
+		p.l.Printf("error trying to find related GitHub issues: %v", err)
+		rRelated = &github.IssuesSearchResult{}
+	}
+
+	qRelatedOld, _ := buildIssueQueries(p.Repo, p.Org, p.Branch, oldTitle, req)
+	rRelatedOld, _, err := p.searchIssues(ctx, qRelatedOld, &github.SearchOptions{
+		ListOptions: github.ListOptions{PerPage: 10},
+	})
+	if err != nil {
+		p.l.Printf("error trying to find related GitHub issues (old format): %v", err)
+		rRelatedOld = &github.IssuesSearchResult{}
+	}
+
+	// Combine related issues from both searches, deduplicate
+	relatedNew := filterByPrefixTitleMatch(rRelated, newTitle)
+	relatedOld := filterByPrefixTitleMatch(rRelatedOld, oldTitle)
+	data.RelatedIssues = combineAndDeduplicateIssues(relatedNew, relatedOld)
+
+	// Use new title for creating issues
+	title := newTitle
 	data.InternalLog = ctx.Builder.String()
 	r := &Renderer{}
 	if err := formatter.Body(r, data); err != nil {

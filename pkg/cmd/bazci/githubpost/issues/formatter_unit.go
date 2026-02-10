@@ -8,6 +8,7 @@ package issues
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // UnitTestFormatter is the standard issue formatter for unit tests.
@@ -15,9 +16,29 @@ var UnitTestFormatter IssueFormatter = unitTestFormatterTyp{}
 
 type unitTestFormatterTyp struct{}
 
+// branchPrefix returns the prefix for issue titles based on branch name.
+// Examples:
+//
+//	"master" -> "release-master"
+//	"release-24.1" -> "release-24.1"
+//	"provisional_25.1" -> "release-provisional_25.1"
+func branchPrefix(branch string) string {
+	if branch == "master" {
+		return "release-master"
+	}
+	if strings.HasPrefix(branch, "release-") {
+		return branch
+	}
+	if strings.HasPrefix(branch, "provisional_") {
+		return "release-" + branch
+	}
+	return "release-" + branch // fallback for unknown patterns
+}
+
 // Title is part of the IssueFormatter interface.
 func (unitTestFormatterTyp) Title(data TemplateData) string {
-	return fmt.Sprintf("%s: %s failed", data.PackageNameShort, data.TestName)
+	prefix := branchPrefix(data.Branch)
+	return fmt.Sprintf("%s: %s: %s failed", prefix, data.PackageNameShort, data.TestName)
 }
 
 // Body is part of the IssueFormatter interface.

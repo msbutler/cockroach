@@ -207,7 +207,7 @@ test logs left over in: /go/src/github.com/cockroachdb/cockroach/artifacts/logTe
 						issueNum = *base.Number
 					}
 					return github.Issue{
-						Title:  github.String(fmt.Sprintf("%s: %s%s failed [failure reason]", packageName, testName, suffix)),
+						Title:  github.String(fmt.Sprintf("release-0.1: %s: %s%s failed [failure reason]", packageName, testName, suffix)),
 						Number: &issueNum,
 						Labels: base.Labels,
 					}
