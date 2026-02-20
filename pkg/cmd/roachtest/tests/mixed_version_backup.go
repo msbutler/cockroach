@@ -448,6 +448,29 @@ type (
 	}
 )
 
+// collectionBuilder accumulates the state needed to build a
+// backupCollection step-by-step (full backup, incrementals,
+// compactions, and final content saving).
+type collectionBuilder struct {
+	d                  *BackupRestoreTestDriver
+	ctx                context.Context
+	l                  *logger.Logger
+	tasker             task.Tasker
+	rng                *rand.Rand
+	fullBackupSpec     backupSpec
+	incBackupSpec      backupSpec
+	backupNamePrefix   string
+	internalSystemJobs bool
+	isMultitenant      bool
+
+	// State accumulated during building.
+	collection             backupCollection
+	backupEndTimes         []string
+	fullBackupEndTime      string
+	latestIncBackupEndTime string
+	incCount               int
+}
+
 // tableNamesWithDB returns a list of qualified table names where the
 // database name is `db`. This can be useful in situations where we
 // backup a "bank.bank" table, for example, and then restore it into a
@@ -2286,11 +2309,148 @@ func (mvb *mixedVersionBackup) createBackupCollection(
 	return nil
 }
 
+func (d *BackupRestoreTestDriver) newCollectionBuilder(
+	ctx context.Context,
+	l *logger.Logger,
+	tasker task.Tasker,
+	rng *rand.Rand,
+	fullBackupSpec backupSpec,
+	incBackupSpec backupSpec,
+	backupNamePrefix string,
+	internalSystemJobs bool,
+	isMultitenant bool,
+) *collectionBuilder {
+	return &collectionBuilder{
+		d:                  d,
+		ctx:                ctx,
+		l:                  l,
+		tasker:             tasker,
+		rng:                rng,
+		fullBackupSpec:     fullBackupSpec,
+		incBackupSpec:      incBackupSpec,
+		backupNamePrefix:   backupNamePrefix,
+		internalSystemJobs: internalSystemJobs,
+		isMultitenant:      isMultitenant,
+		backupEndTimes:     make([]string, 0),
+	}
+}
+
+// FullBackup runs the full backup and records its end time.
+func (b *collectionBuilder) FullBackup() error {
+	if err := b.d.testUtils.runJobOnOneOf(
+		b.ctx, b.l, b.fullBackupSpec.Execute.Nodes, func() error {
+			var err error
+			b.collection, b.fullBackupEndTime, err = b.d.runBackup(
+				b.ctx, b.l, b.tasker, b.rng,
+				b.fullBackupSpec.Plan.Nodes, b.fullBackupSpec.PauseProbability,
+				fullBackup{b.backupNamePrefix}, b.internalSystemJobs, b.isMultitenant,
+			)
+			return err
+		}); err != nil {
+		return err
+	}
+	b.backupEndTimes = append(b.backupEndTimes, b.fullBackupEndTime)
+	return nil
+}
+
+// IncBackup runs a single incremental backup on top of the current
+// collection and records its end time.
+func (b *collectionBuilder) IncBackup() error {
+	b.incCount++
+	if err := b.d.testUtils.runJobOnOneOf(
+		b.ctx, b.l, b.incBackupSpec.Execute.Nodes, func() error {
+			var err error
+			b.collection, b.latestIncBackupEndTime, err = b.d.runBackup(
+				b.ctx, b.l, b.tasker, b.rng,
+				b.incBackupSpec.Plan.Nodes, b.incBackupSpec.PauseProbability,
+				incrementalBackup{collection: b.collection, incNum: b.incCount},
+				b.internalSystemJobs, b.isMultitenant,
+			)
+			return err
+		}); err != nil {
+		return err
+	}
+	b.backupEndTimes = append(b.backupEndTimes, b.latestIncBackupEndTime)
+	return nil
+}
+
+// CompactBackup runs a compaction over a randomly selected range of
+// the backup chain. The caller is responsible for checking compaction
+// eligibility before calling this method.
+func (b *collectionBuilder) CompactBackup() error {
+	// Require that endIdx - startIdx >= 2 so at least 2 inc backups are
+	// compacted. If there are 3 backupEndTimes, the start must be the the
+	// 0th. The endIdx is always the last index for now, so the compacted
+	// backup gets selected to restore.
+	startIdx := b.rng.Intn(len(b.backupEndTimes) - 2)
+	endIdx := len(b.backupEndTimes) - 1
+
+	var fullPath string
+	_, db := b.d.testUtils.RandomDB(b.rng, b.d.roachNodes)
+	row := db.QueryRowContext(b.ctx, fmt.Sprintf(`SELECT path
+        FROM [SHOW BACKUPS IN '%s']
+        ORDER BY path DESC
+        LIMIT 1`, b.collection.uri()))
+	if err := row.Scan(&fullPath); err != nil {
+		return errors.Wrapf(err, "error while getting full backup path %s", b.collection.name)
+	}
+	compact := compactedBackup{
+		collection: b.collection,
+		startTime:  b.backupEndTimes[startIdx],
+		endTime:    b.backupEndTimes[endIdx],
+		fullSubdir: fullPath,
+	}
+	if err := b.d.testUtils.runJobOnOneOf(
+		b.ctx, b.l, b.incBackupSpec.Execute.Nodes, func() error {
+			var err error
+			b.collection, b.latestIncBackupEndTime, err = b.d.runBackup(
+				b.ctx, b.l, b.tasker, b.rng,
+				b.incBackupSpec.Plan.Nodes, b.incBackupSpec.PauseProbability,
+				compact, b.internalSystemJobs, b.isMultitenant,
+			)
+			return err
+		}); err != nil {
+		return err
+	}
+	// Since a compacted backup was made, then the backup end times of the
+	// backups it compacted should be removed from the slice. This prevents a
+	// scenario where a later compaction attempts to pick a start time from
+	// one of the backups that were compacted. Since compaction looks at the
+	// elided backup chain, these compacted backups are replaced by the
+	// compacted backup and compaction will fail due to being unable to find
+	// the starting backup.
+	b.backupEndTimes = slices.Delete(b.backupEndTimes, startIdx+1, endIdx)
+	return nil
+}
+
+// SaveContents finalises the collection by optionally selecting a
+// restore AOST, computing the fingerprint AOST, and saving
+// contents.
+func (b *collectionBuilder) SaveContents() (*backupCollection, error) {
+	if err := b.collection.maybeUseRestoreAOST(
+		b.l, b.rng, b.fullBackupEndTime, b.latestIncBackupEndTime,
+	); err != nil {
+		return nil, err
+	}
+
+	fingerprintAOST := b.latestIncBackupEndTime
+	if fingerprintAOST == "" {
+		// If latestIncBackupEndTime is empty, we never took an incremental
+		// backup. Fingerprint on the full backup endtime instead.
+		fingerprintAOST = b.fullBackupEndTime
+	}
+	if b.collection.restoreAOST != "" {
+		fingerprintAOST = b.collection.restoreAOST
+	}
+	return b.d.saveContents(b.ctx, b.l, b.rng, &b.collection, fingerprintAOST)
+}
+
 // createBackupCollection creates a new backup collection to be
 // restored/verified at the end of the test. A full backup is created,
-// and an incremental one is created on top of it. Both backups are
-// created according to their respective `backupSpec`, indicating
-// where they should be planned and executed.
+// and a series of incremental backups are created on top of it, with
+// optional compaction. Both backups are created according to their
+// respective `backupSpec`, indicating where they should be planned
+// and executed.
 func (d *BackupRestoreTestDriver) createBackupCollection(
 	ctx context.Context,
 	l *logger.Logger,
@@ -2302,96 +2462,33 @@ func (d *BackupRestoreTestDriver) createBackupCollection(
 	internalSystemJobs bool,
 	isMultitenant bool,
 ) (*backupCollection, error) {
-	var collection backupCollection
-	backupEndTimes := make([]string, 0)
-	var latestIncBackupEndTime string
-	var fullBackupEndTime string
+	b := d.newCollectionBuilder(ctx, l, tasker, rng, fullBackupSpec, incBackupSpec,
+		backupNamePrefix, internalSystemJobs, isMultitenant)
 
-	// Create full backup.
-	if err := d.testUtils.runJobOnOneOf(ctx, l, fullBackupSpec.Execute.Nodes, func() error {
-		var err error
-		collection, fullBackupEndTime, err = d.runBackup(
-			ctx, l, tasker, rng, fullBackupSpec.Plan.Nodes, fullBackupSpec.PauseProbability,
-			fullBackup{backupNamePrefix}, internalSystemJobs, isMultitenant,
-		)
-		return err
-	}); err != nil {
+	if err := b.FullBackup(); err != nil {
 		return nil, err
 	}
-	backupEndTimes = append(backupEndTimes, fullBackupEndTime)
 
-	// Create incremental backups.
 	numIncrementals := possibleNumIncrementalBackups[rng.Intn(len(possibleNumIncrementalBackups))]
 	if d.testUtils.mock {
 		numIncrementals = 2
 	}
 	l.Printf("creating %d incremental backups", numIncrementals)
-	for i := range numIncrementals {
+	for range numIncrementals {
 		d.randomWait(l, rng)
-		if err := d.testUtils.runJobOnOneOf(ctx, l, incBackupSpec.Execute.Nodes, func() error {
-			var err error
-			collection, latestIncBackupEndTime, err = d.runBackup(
-				ctx, l, tasker, rng, incBackupSpec.Plan.Nodes, incBackupSpec.PauseProbability,
-				incrementalBackup{collection: collection, incNum: i + 1}, internalSystemJobs, isMultitenant,
-			)
-			return err
-		}); err != nil {
+		if err := b.IncBackup(); err != nil {
 			return nil, err
 		}
-		backupEndTimes = append(backupEndTimes, latestIncBackupEndTime)
 
-		if d.testUtils.compactionEnabled && !collection.withRevisionHistory() && len(backupEndTimes) >= 3 {
-			// Require that endIdx - startIdx >= 2 so at least 2 inc backups are
-			// compacted. If there are 3 backupEndTimes, the start must be the the
-			// 0th. Thn endIdx is always the last index for now, so the compacted
-			// backup gets selected to restore.
-			startIdx := rng.Intn(len(backupEndTimes) - 2)
-			endIdx := len(backupEndTimes) - 1
-
-			var fullPath string
-			_, db := d.testUtils.RandomDB(rng, d.roachNodes)
-			row := db.QueryRowContext(ctx, fmt.Sprintf(`SELECT path
-        FROM [SHOW BACKUPS IN '%s']
-        ORDER BY path DESC
-        LIMIT 1`, collection.uri()))
-			if err := row.Scan(&fullPath); err != nil {
-				return nil, errors.Wrapf(err, "error while getting full backup path %s", collection.name)
-			}
-			compact := compactedBackup{collection: collection, startTime: backupEndTimes[startIdx], endTime: backupEndTimes[endIdx], fullSubdir: fullPath}
-			if err := d.testUtils.runJobOnOneOf(ctx, l, incBackupSpec.Execute.Nodes, func() error {
-				var err error
-				collection, latestIncBackupEndTime, err = d.runBackup(
-					ctx, l, tasker, rng, incBackupSpec.Plan.Nodes, incBackupSpec.PauseProbability,
-					compact, internalSystemJobs, isMultitenant)
-				return err
-			}); err != nil {
+		if d.testUtils.compactionEnabled && !b.collection.withRevisionHistory() &&
+			len(b.backupEndTimes) >= 3 {
+			if err := b.CompactBackup(); err != nil {
 				return nil, err
 			}
-			// Since a compacted backup was made, then the backup end times of the
-			// backups it compacted should be removed from the slice. This prevents a
-			// scenario where a later compaction attempts to pick a start time from
-			// one of the backups that were compacted. Since compaction looks at the
-			// elided backup chain, these compacted backups are replaced by the
-			// compacted backup and compaction will fail due to being unable to find
-			// the starting backup.
-			backupEndTimes = slices.Delete(backupEndTimes, startIdx+1, endIdx)
 		}
 	}
 
-	if err := collection.maybeUseRestoreAOST(l, rng, fullBackupEndTime, latestIncBackupEndTime); err != nil {
-		return nil, err
-	}
-
-	fingerprintAOST := latestIncBackupEndTime
-	if fingerprintAOST == "" {
-		// If latestIncBackupEndTime is empty, we never took an incremental backup.
-		// Fingerprint on the full backup endtime instead.
-		fingerprintAOST = fullBackupEndTime
-	}
-	if collection.restoreAOST != "" {
-		fingerprintAOST = collection.restoreAOST
-	}
-	return d.saveContents(ctx, l, rng, &collection, fingerprintAOST)
+	return b.SaveContents()
 }
 
 // deleteSSTFromBackupLayers deletes one SST from each layer of a backup
