@@ -39,8 +39,10 @@ type Applier struct {
 		syncutil.Mutex
 		replicatedTime hlc.Timestamp
 		transactions   map[hlc.Timestamp]transactionState
-		waiting        map[hlc.Timestamp][]hlc.Timestamp
-		timestamps     ring.Buffer[hlc.Timestamp]
+		// waiting: t3 is blocking a list of dependent txns t4, t5.
+		waiting map[hlc.Timestamp][]hlc.Timestamp
+		// txn's are coming in timestamp order so this buffer should be in timestamp order.
+		timestamps ring.Buffer[hlc.Timestamp]
 	}
 	txnWriters []txnwriter.TransactionWriter
 
@@ -68,6 +70,7 @@ func (a *Applier) Frontier() chan hlc.Timestamp {
 	return a.frontier.Chan
 }
 
+// Assume txns are coming in timestamp order.
 func (a *Applier) Run(ctx context.Context, input chan ScheduledTransaction) error {
 	ready := make(chan ldrdecoder.Transaction)
 	applied := make(chan appliedTransaction)
@@ -229,6 +232,8 @@ func (a *Applier) recordCompletion(
 		}
 
 		waitingTxn.Dependencies = slices.DeleteFunc(waitingTxn.Dependencies, func(ts hlc.Timestamp) bool {
+			// TODO: we could add a stopping condition here. I'm p sure Dependencies
+			// are in order.
 			return ts == completedTxn.Timestamp
 		})
 		a.mu.transactions[waitingTs] = waitingTxn

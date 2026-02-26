@@ -16,6 +16,27 @@ func NewScheduler(lockCount int32) *Scheduler {
 }
 
 type Scheduler struct {
+	// lockMap tracks the holders of each lock. A holder is a txn. The lockList is
+	// logically a list of transactions, but the data is stored in a pre-allocated
+	// lock table. For a given row, we only need to keep track of the latest txn
+	// that wants a write lock; therefore, the txn with the write lock will be
+	// stored at the head of the list. Here's why:
+	// - given a txn at t5 that wants to write at key A, it will depend on all
+	// write on key before it, but we don't need to know all write times, just the
+	// latest one. i.e. hold apply the txn at t5 until t4 has committed.
+	// - so let's consider a world with just write locks: txn t5 comes in and
+	// modifes A and B. Before scheduling there's a lock on A for t4 and a lock on
+	// B for t3. Schedule() should return t4 and t3. This logic happens in
+	// addWriteDependency(), after which, we add the incoming txn into the lock
+	// map.
+	//
+	// Reads can happen in parallel (i.e if
+	// ts4 and ts3 only have read locks on the same key, they can happen in
+	// parallel), so when a write on the key comes in at t5, it needs to wait on
+	// both t3 and t4. Therefore, the lockMap needs to track _multiple_ read txn's
+	// for a given key, unlike the write lock.
+	//
+	//
 	lockMap      map[LockHash]lockList
 	lockTable    lockTable
 	eventHorizon hlc.Timestamp
