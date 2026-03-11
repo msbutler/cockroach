@@ -15,9 +15,22 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-type Transaction struct {
+// TxnID uniquely identifies a transaction. Comparison methods (Less, LessEq)
+// delegate to the underlying Timestamp, so TxnIDs are ordered by timestamp.
+type TxnID struct {
 	Timestamp hlc.Timestamp
-	WriteSet  []DecodedRow
+	ApplierID int32
+}
+
+func (t TxnID) Less(s TxnID) bool { return t.Timestamp.Less(s.Timestamp) }
+
+func (t TxnID) LessEq(s TxnID) bool { return t.Timestamp.LessEq(s.Timestamp) }
+
+func (t TxnID) IsSet() bool { return t.Timestamp.IsSet() }
+
+type Transaction struct {
+	TxnID    TxnID
+	WriteSet []DecodedRow
 }
 
 type TxnDecoder struct {
@@ -44,7 +57,7 @@ func (t *TxnDecoder) DecodeTxn(
 	}
 
 	var result Transaction
-	result.Timestamp = transaction[0].KeyValue.Value.Timestamp
+	result.TxnID.Timestamp = transaction[0].KeyValue.Value.Timestamp
 	result.WriteSet = make([]DecodedRow, 0, len(transaction))
 
 	for _, event := range transaction {
@@ -52,9 +65,9 @@ func (t *TxnDecoder) DecodeTxn(
 		if err != nil {
 			return Transaction{}, err
 		}
-		if decoded.RowTimestamp != result.Timestamp {
+		if decoded.RowTimestamp != result.TxnID.Timestamp {
 			return Transaction{}, errors.AssertionFailedf("inconsistent timestamps in transaction: got %s, expected %s",
-				decoded.RowTimestamp, result.Timestamp)
+				decoded.RowTimestamp, result.TxnID.Timestamp)
 		}
 		result.WriteSet = append(result.WriteSet, decoded)
 	}
