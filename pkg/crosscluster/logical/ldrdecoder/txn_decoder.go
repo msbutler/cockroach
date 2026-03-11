@@ -15,11 +15,16 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
+// ApplierID identifies which applier owns a transaction. Used to partition
+// transactions across parallel appliers and coordinate cross-applier
+// dependencies.
+type ApplierID int32
+
 // TxnID uniquely identifies a transaction. Comparison methods (Less, LessEq)
 // delegate to the underlying Timestamp, so TxnIDs are ordered by timestamp.
 type TxnID struct {
 	Timestamp hlc.Timestamp
-	ApplierID int32
+	ApplierID ApplierID
 }
 
 func (t TxnID) Less(s TxnID) bool { return t.Timestamp.Less(s.Timestamp) }

@@ -72,7 +72,10 @@ type depsOpt []int64
 
 func (d depsOpt) add(n *txnNode) {
 	for _, w := range d {
-		n.deps = append(n.deps, ldrdecoder.TxnID{Timestamp: hlc.Timestamp{WallTime: w}})
+		n.deps = append(n.deps, ldrdecoder.TxnID{
+			Timestamp: hlc.Timestamp{WallTime: w},
+			ApplierID: 1,
+		})
 	}
 }
 
@@ -87,7 +90,10 @@ func (h horizonOpt) add(n *txnNode) {
 func horizon(wallTime int64) horizonOpt { return horizonOpt(wallTime) }
 
 func txn(wallTime int64, opts ...txnOpt) txnNode {
-	n := txnNode{id: ldrdecoder.TxnID{Timestamp: hlc.Timestamp{WallTime: wallTime}}}
+	n := txnNode{id: ldrdecoder.TxnID{
+		Timestamp: hlc.Timestamp{WallTime: wallTime},
+		ApplierID: 1,
+	}}
 	for _, o := range opts {
 		o.add(&n)
 	}
@@ -106,7 +112,10 @@ func generateRandomDAG(rng *rand.Rand, numTxns int, maxDeps int) []txnNode {
 	nodes := make([]txnNode, numTxns)
 	var maxHorizonWallTime int64
 	for i := range nodes {
-		nodes[i].id = ldrdecoder.TxnID{Timestamp: hlc.Timestamp{WallTime: int64(i + 1)}}
+		nodes[i].id = ldrdecoder.TxnID{
+			Timestamp: hlc.Timestamp{WallTime: int64(i + 1)},
+			ApplierID: 1,
+		}
 
 		horizonRange := int64(i) - maxHorizonWallTime + 1
 		horizonWallTime := maxHorizonWallTime + int64(rng.Intn(int(horizonRange)))
