@@ -406,7 +406,15 @@ func (a *Applier) recordCompletion(
 		return err
 	}
 	delete(a.mu.localWaiting, completedID)
-	txnState := a.mu.transactions[completedID]
+	txnState, ok := a.mu.transactions[completedID]
+	if !ok {
+		// This txn was already drained by a previous recordCompletion's
+		// drain loop. This happens with synthetic checkpoint txns:
+		// processCheckpoint marks them applied=true at creation, so a
+		// later drain loop can remove them before their own completion
+		// message is processed by the aggregator.
+		return nil
+	}
 	txnState.applied = true
 	a.mu.transactions[completedID] = txnState
 
@@ -556,7 +564,15 @@ func (a *Applier) drainSatisfiedHorizonWaitersLocked(
 			oldestIdx = i
 		}
 	}
+	// Additionally verify all local txns at ts ≤ horizon are applied. The
+	// drain loop has already run, so txnIDs.GetFirst() is the earliest
+	// unapplied local txn. If its timestamp ≤ horizon, there are in-flight
+	// local txns that must complete before the horizon is truly satisfied.
 	oldest := a.mu.transactions[a.mu.horizonWaiting[oldestIdx]]
+	if a.mu.txnIDs.Len() > 0 &&
+		a.mu.txnIDs.GetFirst().Timestamp.LessEq(oldest.EventHorizon) {
+		return
+	}
 	if oldest.EventHorizon.LessEq(remoteFrontier) &&
 		oldest.EventHorizon.LessEq(a.mu.checkpoint) {
 		readyBuffer.AddLast(oldest.Transaction)

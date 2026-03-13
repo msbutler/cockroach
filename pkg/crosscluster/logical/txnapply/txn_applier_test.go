@@ -144,13 +144,17 @@ func dtxn(applierID ldrdecoder.ApplierID, wallTime int64, opts ...txnOpt) txnNod
 //  2. EventHorizon values are monotonically non-decreasing with respect to
 //     transaction timestamps: if txn.ts > txn2.ts then
 //     txn.EventHorizon >= txn2.EventHorizon.
-func generateRandomDAG(rng *rand.Rand, numTxns int, maxDeps int) []txnNode {
+func generateRandomDAG(rng *rand.Rand, numTxns int, maxDeps int, numAppliers int) []txnNode {
 	nodes := make([]txnNode, numTxns)
 	var maxHorizonWallTime int64
 	for i := range nodes {
+		applierID := ldrdecoder.ApplierID(1)
+		if numAppliers > 1 {
+			applierID = ldrdecoder.ApplierID(rng.Intn(numAppliers) + 1)
+		}
 		nodes[i].id = ldrdecoder.TxnID{
 			Timestamp: hlc.Timestamp{WallTime: int64(i + 1)},
-			ApplierID: 1,
+			ApplierID: applierID,
 		}
 
 		horizonRange := int64(i) - maxHorizonWallTime + 1
@@ -238,8 +242,23 @@ func TestTxnApplierRandom(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 
 	rng, seed := randutil.NewTestRand()
-	dag := generateRandomDAG(rng, 100, rng.Intn(10))
+	dag := generateRandomDAG(rng, 100, rng.Intn(10), 1 /* numAppliers */)
 	logDAG(t, dag)
+
+	numWriters := max(1, rng.Intn(len(dag)))
+	applied := runDistributedApplier(t, dag, numWriters, seed)
+	require.Equal(t, len(dag), len(applied), "not all transactions were applied")
+	checkApplyOrder(t, dag, applied)
+}
+
+func TestDistributedTxnApplierRandom(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+
+	rng, seed := randutil.NewTestRand()
+	numAppliers := 2 + rng.Intn(4) // 2 to 5 appliers
+	dag := generateRandomDAG(rng, 100, rng.Intn(10), numAppliers)
+	logDAG(t, dag)
+	t.Logf("numAppliers=%d", numAppliers)
 
 	numWriters := max(1, rng.Intn(len(dag)))
 	applied := runDistributedApplier(t, dag, numWriters, seed)
@@ -362,9 +381,18 @@ func runDistributedApplier(
 		a, err := NewApplier(id, writers, depTracker, ids)
 		require.NoError(t, err)
 
+		// Build events for this applier. Send its own txns in order,
+		// with gap-filling checkpoints so the applier's frontier can
+		// advance through timestamp ranges where it has no txns. This
+		// prevents deadlocks where another applier's event horizon
+		// needs this applier's frontier to advance.
 		txns := txnsByApplier[id]
-		input := make(chan ApplierEvent, len(txns)+1)
+		input := make(chan ApplierEvent, 2*len(txns)+1)
 		for _, txn := range txns {
+			gapEnd := hlc.Timestamp{WallTime: txn.id.Timestamp.WallTime - 1}
+			if gapEnd.IsSet() {
+				input <- Checkpoint{Timestamp: gapEnd}
+			}
 			input <- ScheduledTransaction{
 				Transaction:  ldrdecoder.Transaction{TxnID: txn.id},
 				Dependencies: txn.deps,
