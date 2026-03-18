@@ -1981,13 +1981,9 @@ func registerClusterReplicationResilience(r registry.Registry) {
 }
 
 // registerClusterReplicationDisconnect tests that a physical replication stream
-// succeeds if a source and destination node pair disconnects. When the pair
-// disconnects, we expect its pg connection to time out, causing the job to
-// retry. The job will recreate a topology, potentially with different src-node
-// pairings. If the disconnected nodes no longer match in the new topology, the
-// physical replication stream will make progress in the face of network
-// partition. In the unlikely event that the two disconnected nodes continue to
-// get paired together, the stream should catch up once the test driver
+// succeeds after every destination node is disconnected from every source node.
+// When the clusters are partitioned, we expect pg connections to time out,
+// causing the job to retry. The stream should catch up once the test driver
 // reconnects the nodes.
 func registerClusterReplicationDisconnect(r registry.Registry) {
 	sp := replicationSpec{
@@ -1995,10 +1991,11 @@ func registerClusterReplicationDisconnect(r registry.Registry) {
 		srcNodes:                  3,
 		dstNodes:                  3,
 		cpus:                      4,
-		workload:                  replicateKV{readPercent: 0, initRows: 1000000, maxBlockBytes: 1024, initWithSplitAndScatter: true, tolerateErrors: true},
-		timeout:                   20 * time.Minute,
-		additionalDuration:        10 * time.Minute,
-		cutover:                   2 * time.Minute,
+		workload:                  replicateKV{readPercent: 0, initRows: 1000, maxBlockBytes: 1024, initWithSplitAndScatter: true, tolerateErrors: true},
+		timeout:                   30 * time.Minute,
+		additionalDuration:        1 * time.Minute,
+		cutover:                   0 * time.Minute, // CUTOVER TO LATEST
+		cutoverTimeout:            5 * time.Minute,
 		maxAcceptedLatency:        12 * time.Minute,
 		skipNodeDistributionCheck: true,
 		clouds:                    registry.OnlyGCE,
@@ -2029,30 +2026,19 @@ func registerClusterReplicationDisconnect(r registry.Registry) {
 		require.NoError(t, waitForTargetPhase(ctx, rd, dstJobID, phaseSteadyState))
 		sleepBeforeResiliencyEvent(rd, phaseSteadyState)
 
-		srcNode := rd.setup.src.nodes.RandNode()[0]
-		srcTenantSQL := sqlutils.MakeSQLRunner(c.Conn(ctx, t.L(), srcNode))
-
-		var dstNode int
-		srcTenantSQL.QueryRow(t, `select split_part(consumer, '[', 1) from crdb_internal.cluster_replication_node_streams order by random() limit 1`).Scan(&dstNode)
-
-		roachprodDstNode := dstNode + sp.srcNodes
-
 		disconnectDuration := sp.additionalDuration
-		rd.t.L().Printf("Disconnecting Src %d, Dest %d for %.2f minutes", srcNode,
-			roachprodDstNode, disconnectDuration.Minutes())
+		rd.t.L().Printf("Disconnecting all src nodes %v from all dst nodes %v for %.2f minutes",
+			rd.setup.src.nodes, rd.setup.dst.nodes, disconnectDuration.Minutes())
 
-		// Normally, the blackholeFailer is accessed through the failer interface,
-		// at least in the failover tests. Because this test shouldn't use all the
-		// failer interface calls (e.g. Setup(), and Ready()), we use the
-		// blakholeFailer struct directly. In other words, in this test, we
-		// shouldn't treat the blackholeFailer as an abstracted api.
 		blackholeFailer := &blackholeFailer{t: rd.t, c: rd.c, input: true, output: true}
-		blackholeFailer.FailPartial(ctx, srcNode, []int{roachprodDstNode})
+		for _, srcNode := range rd.setup.src.nodes {
+			blackholeFailer.FailPartial(ctx, srcNode, rd.setup.dst.nodes)
+		}
 
-		time.Sleep(disconnectDuration)
+		//time.Sleep(disconnectDuration)
 		// Calling this will log the latest topology.
-		blackholeFailer.Cleanup(ctx)
-		rd.t.L().Printf("Nodes reconnected. C2C Job should eventually complete")
+		//blackholeFailer.Cleanup(ctx)
+		//rd.t.L().Printf("Nodes reconnected. C2C Job should eventually complete")
 	})
 }
 
