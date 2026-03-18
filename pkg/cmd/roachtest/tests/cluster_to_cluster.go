@@ -556,8 +556,7 @@ type replicationDriver struct {
 	// cutoverStarted closes once the driver issues a cutover commmand.
 	cutoverStarted chan struct{}
 
-	// replicationStartHook is called as soon as the replication job begins.
-	replicationStartHook func(ctx context.Context, sp *replicationDriver)
+	replicationPreCutoverHook func(ctx context.Context, sp *replicationDriver)
 
 	setup   *c2cSetup
 	t       test.Test
@@ -661,7 +660,7 @@ func (rd *replicationDriver) setupC2C(
 	rd.t = t
 	rd.c = c
 	rd.metrics = &c2cMetrics{}
-	rd.replicationStartHook = func(ctx context.Context, sp *replicationDriver) {}
+	rd.replicationPreCutoverHook = func(ctx context.Context, sp *replicationDriver) {}
 	rd.beforeWorkloadHook = func(_ context.Context) error { return nil }
 	rd.cutoverStarted = make(chan struct{})
 
@@ -763,7 +762,6 @@ func (rd *replicationDriver) startReplicationStream(ctx context.Context) int {
 		streamReplStmt += " WITH READ VIRTUAL CLUSTER"
 	}
 	rd.setup.dst.sysSQL.Exec(rd.t, streamReplStmt)
-	rd.replicationStartHook(ctx, rd)
 	return getIngestionJobID(rd.t, rd.setup.dst.sysSQL, rd.setup.dst.name)
 }
 
@@ -1254,7 +1252,7 @@ func (rd *replicationDriver) main(ctx context.Context) {
 	}
 
 	rd.metrics.cutoverStart = newMetricSnapshot(metricSnapper, timeutil.Now())
-
+	rd.replicationPreCutoverHook(ctx, rd)
 	rd.t.Status(fmt.Sprintf("waiting for replication stream to cutover to %s", cutoverTo))
 	actualCutoverTime := rd.stopReplicationStream(ctx, ingestionJobID, cutoverTime)
 
@@ -1900,7 +1898,7 @@ func registerClusterReplicationResilience(r registry.Registry) {
 					}
 				}
 
-				rrd.replicationStartHook = func(ctx context.Context, rd *replicationDriver) {
+				rrd.replicationPreCutoverHook = func(ctx context.Context, rd *replicationDriver) {
 					// Once the C2C job is set up, we need to modify some configs to
 					// ensure the shutdown doesn't bother the underlying c2c job and the
 					// foreground workload. The shutdownSetupDone channel prevents other
@@ -1991,7 +1989,7 @@ func registerClusterReplicationDisconnect(r registry.Registry) {
 		srcNodes:                  3,
 		dstNodes:                  3,
 		cpus:                      4,
-		workload:                  replicateKV{readPercent: 0, initRows: 1000, maxBlockBytes: 1024, initWithSplitAndScatter: true, tolerateErrors: true},
+		workload:                  replicateKV{readPercent: 0, initRows: 10, maxBlockBytes: 4, initWithSplitAndScatter: true, tolerateErrors: true},
 		timeout:                   30 * time.Minute,
 		additionalDuration:        1 * time.Minute,
 		cutover:                   0 * time.Minute, // CUTOVER TO LATEST
@@ -2006,34 +2004,21 @@ func registerClusterReplicationDisconnect(r registry.Registry) {
 		cleanup := rd.setupC2C(ctx, t, c)
 		defer cleanup()
 
-		shutdownSetupDone := make(chan struct{})
-
-		rd.replicationStartHook = func(ctx context.Context, rd *replicationDriver) {
-			defer close(shutdownSetupDone)
+		blackholeFailer := &blackholeFailer{t: rd.t, c: rd.c, input: true, output: true}
+		rd.replicationPreCutoverHook = func(ctx context.Context, rd *replicationDriver) {
+			rd.t.L().Printf("Disconnecting all src nodes %v from all dst nodes %v forever!!",
+				rd.setup.src.nodes, rd.setup.dst.nodes)
+			for _, srcNode := range rd.setup.src.nodes {
+				blackholeFailer.FailPartial(ctx, srcNode, rd.setup.dst.nodes)
+			}
 		}
 		m := rd.newMonitor(ctx)
 		m.Go(func(ctx context.Context) error {
 			rd.main(ctx)
+			blackholeFailer.Cleanup(ctx)
 			return nil
 		})
 		defer m.Wait()
-
-		// Dont begin node disconnecion until c2c job is setup.
-		<-shutdownSetupDone
-		dstJobID := jobspb.JobID(getIngestionJobID(t, rd.setup.dst.sysSQL, rd.setup.dst.name))
-
-		// TODO(msbutler): disconnect nodes during a random phase
-		require.NoError(t, waitForTargetPhase(ctx, rd, dstJobID, phaseSteadyState))
-		sleepBeforeResiliencyEvent(rd, phaseSteadyState)
-
-		disconnectDuration := sp.additionalDuration
-		rd.t.L().Printf("Disconnecting all src nodes %v from all dst nodes %v for %.2f minutes",
-			rd.setup.src.nodes, rd.setup.dst.nodes, disconnectDuration.Minutes())
-
-		blackholeFailer := &blackholeFailer{t: rd.t, c: rd.c, input: true, output: true}
-		for _, srcNode := range rd.setup.src.nodes {
-			blackholeFailer.FailPartial(ctx, srcNode, rd.setup.dst.nodes)
-		}
 
 		//time.Sleep(disconnectDuration)
 		// Calling this will log the latest topology.
