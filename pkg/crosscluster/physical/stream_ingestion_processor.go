@@ -470,7 +470,7 @@ func (sip *streamIngestionProcessor) Start(ctx context.Context) {
 				streamingKnobs.BeforeClientSubscribe(uri.Serialize(), string(token), sip.frontier, false)
 			}
 		}
-
+		log.Dev.Infof(ctx, "subscribing with initial scan timestamp %s and frontier %s", sip.spec.InitialScanTimestamp.GoTime(), sip.frontier.Frontier().GoTime())
 		sub, err := streamClient.Subscribe(ctx, streampb.StreamID(sip.spec.StreamID),
 			int32(sip.FlowCtx.NodeID.SQLInstanceID()), sip.ProcessorID,
 			token,

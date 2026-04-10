@@ -342,7 +342,6 @@ func (sf *streamIngestionFrontier) maybeUpdateProgress() error {
 
 	replicatedTime := f.Frontier()
 	sf.lastPartitionUpdate = timeutil.Now()
-	log.Dev.VInfof(ctx, 2, "persisting replicated time of %s", replicatedTime)
 
 	sf.aggregateAndUpdateRangeMetrics()
 
@@ -371,6 +370,8 @@ func (sf *streamIngestionFrontier) maybeUpdateProgress() error {
 				HighWater: &replicatedTime,
 			}
 		}
+
+		log.Dev.Infof(ctx, "persisting replicated time of %s", progress.GetHighWater().GoTime())
 
 		ju.UpdateProgress(progress)
 
